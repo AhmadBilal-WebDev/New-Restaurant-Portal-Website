@@ -1,0 +1,65 @@
+import { NextResponse } from "next/server";
+const API_BASE_URL = process.env.API_BASE_URL;
+async function proxyProductById(request, id, method) {
+  if (!API_BASE_URL) {
+    return NextResponse.json(
+      { message: "API_BASE_URL is not configured in .env file." },
+      { status: 503 }
+    );
+  }
+  const baseUrl = API_BASE_URL.replace(/\/$/, "");
+  const authHeader = request.headers.get("authorization");
+  const target = new URL(`${baseUrl}/api/restaurant/catalog/products/${id}`);
+  const frontendDomainUrl = request.nextUrl.searchParams.get("frontendDomainUrl");
+  if (frontendDomainUrl) target.searchParams.set("frontendDomainUrl", frontendDomainUrl);
+  const branchName = request.nextUrl.searchParams.get("branchName");
+  if (branchName) target.searchParams.set("branchName", branchName);
+  let body = void 0;
+  if (method === "PUT") {
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json({ message: "Invalid or empty JSON body received." }, { status: 400 });
+    }
+  }
+  try {
+    const response = await fetch(target.toString(), {
+      method,
+      headers: {
+        Accept: "application/json",
+        ...method === "PUT" ? { "Content-Type": "application/json" } : {},
+        ...authHeader ? { Authorization: authHeader } : {}
+      },
+      ...body !== void 0 ? { body: JSON.stringify(body) } : {},
+      cache: "no-store"
+    });
+    const text = await response.text();
+    let data;
+    try {
+      data = text ? JSON.parse(text) : { message: "Empty response from backend" };
+    } catch {
+      data = { message: text || "Backend returned non-JSON response." };
+    }
+    return NextResponse.json(data, { status: response.status });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Backend API is not reachable.";
+    return NextResponse.json({ message }, { status: 503 });
+  }
+}
+async function GET(request, context) {
+  const { id } = await context.params;
+  return proxyProductById(request, id, "GET");
+}
+async function PUT(request, context) {
+  const { id } = await context.params;
+  return proxyProductById(request, id, "PUT");
+}
+async function DELETE(request, context) {
+  const { id } = await context.params;
+  return proxyProductById(request, id, "DELETE");
+}
+export {
+  DELETE,
+  GET,
+  PUT
+};
