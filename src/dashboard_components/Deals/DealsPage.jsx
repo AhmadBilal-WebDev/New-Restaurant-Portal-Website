@@ -15,11 +15,14 @@ import {
   updateRestaurantDeal
 } from '@/shared/lib/restaurantDealsApi';
 import {
+  ArrowLeft,
   BadgePercent,
   Ban,
   Calendar,
+  Check,
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
   Clock,
   Edit2,
   Eye,
@@ -38,6 +41,13 @@ import {
   Wallet,
   X
 } from "lucide-react";
+
+const EDITOR_STEPS = [
+  { id: 0, label: "Basics", hint: "Name, branch & photo" },
+  { id: 1, label: "Pricing", hint: "Prices, tags & order" },
+  { id: 2, label: "Schedule", hint: "Dates & terms" },
+  { id: 3, label: "Items", hint: "Combo contents" }
+];
 
 const INPUT =
   "w-full rounded-xl border border-[var(--admin-border,#292D35)] bg-[var(--admin-input,#1D2128)] px-3.5 py-2 text-[var(--admin-text,#fff)] placeholder-[var(--admin-faint,#737373)] transition-colors focus:outline-none focus:border-[var(--color-admin-accent,#FF5A1F)] focus:ring-1 focus:ring-[color-mix(in_srgb,var(--color-admin-accent,#FF5A1F)_30%,transparent)]";
@@ -254,6 +264,7 @@ const DealsPage = () => {
   const [expandedId, setExpandedId] = useState("");
   const [detailDeal, setDetailDeal] = useState(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editorStep, setEditorStep] = useState(0);
   const [editingDeal, setEditingDeal] = useState(null);
   const [dealToDelete, setDealToDelete] = useState(null);
   const [form, setForm] = useState(() => emptyForm(branchName, 1));
@@ -265,6 +276,33 @@ const DealsPage = () => {
   const [sizeQuantity, setSizeQuantity] = useState("");
   const [addonQuantity, setAddonQuantity] = useState("");
   const [extraQuantity, setExtraQuantity] = useState("");
+  const editorTopRef = useRef(null);
+  const isLight = adminTheme === "light";
+
+  const scrollEditorTop = () => {
+    requestAnimationFrame(() => {
+      editorTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  };
+
+  const resetItemBuilders = () => {
+    setNewItemName("");
+    setNewItemQuantity("1");
+    setSizeOptions([]);
+    setAddonOptions([]);
+    setExtraOptions([]);
+    setSizeQuantity("");
+    setAddonQuantity("");
+    setExtraQuantity("");
+  };
+
+  const closeEditor = () => {
+    if (saving) return;
+    setIsModalOpen(false);
+    setEditingDeal(null);
+    setEditorStep(0);
+    resetItemBuilders();
+  };
 
   const loadDeals = useCallback(async (frontendDomainUrl) => {
     setLoading(true);
@@ -317,44 +355,47 @@ const DealsPage = () => {
 
   const openCreateModal = () => {
     setEditingDeal(null);
-    setForm(emptyForm(branchName, deals.length + 1));
-    setNewItemName("");
-    setNewItemQuantity("1");
-    setSizeOptions([]);
-    setAddonOptions([]);
-    setExtraOptions([]);
-    setSizeQuantity("");
-    setAddonQuantity("");
-    setExtraQuantity("");
+    setForm(
+      emptyForm(
+        !isAllBranches && branchName ? branchName : liveBranches[0]?.city || liveBranches[0]?.name || "",
+        deals.length + 1
+      )
+    );
+    resetItemBuilders();
+    setEditorStep(0);
     setIsModalOpen(true);
+    scrollEditorTop();
   };
 
   const openEditModal = (deal) => {
     setEditingDeal(deal);
     setForm(toForm(deal));
-    setNewItemName("");
-    setNewItemQuantity("1");
-    setSizeOptions([]);
-    setAddonOptions([]);
-    setExtraOptions([]);
-    setSizeQuantity("");
-    setAddonQuantity("");
-    setExtraQuantity("");
+    resetItemBuilders();
     setDetailDeal(null);
+    setEditorStep(0);
     setIsModalOpen(true);
+    scrollEditorTop();
   };
 
   const handleSave = async (event) => {
     event.preventDefault();
-    if (!form.name.trim() || !form.image.trim() || !form.originalPrice || !form.dealPrice) {
-      addToast("Required Fields", "Enter the deal name, image, original price, and deal price.", "error");
+    if (!form.name.trim() || !form.image.trim()) {
+      setEditorStep(0);
+      addToast("Required Fields", "Enter the deal name and upload an image.", "error");
       return;
     }
     if (!form.showAllBranches && !form.branchName.trim()) {
-      addToast("Branch Required", "Select a branch or enable all branches.", "error");
+      setEditorStep(0);
+      addToast("Branch Required", "Select a branch, or choose All Branches.", "error");
+      return;
+    }
+    if (!form.originalPrice || !form.dealPrice) {
+      setEditorStep(1);
+      addToast("Pricing Required", "Enter both original price and deal price.", "error");
       return;
     }
     if (form.items.length === 0) {
+      setEditorStep(3);
       addToast("Items Required", "Add at least one item to this deal.", "error");
       return;
     }
@@ -368,10 +409,23 @@ const DealsPage = () => {
       addToast("Save Failed", restaurantDealApiMessage(result.data, "Deal could not be saved."), "error");
       return;
     }
-    setIsModalOpen(false);
+    closeEditor();
     addToast(editingDeal ? "Deal Updated" : "Deal Added", `${payload.name} saved successfully.`, "success");
     await loadDeals(domain);
   };
+
+  const previewOriginal = Number(form.originalPrice) || 0;
+  const previewDeal = Number(form.dealPrice) || 0;
+  const previewDiscountPct =
+    previewOriginal > 0 && previewDeal >= 0
+      ? Math.max(0, Math.round(((previewOriginal - previewDeal) / previewOriginal) * 100))
+      : 0;
+  const previewTagLabel = form.tags[0]
+    ? RESTAURANT_DEAL_TAGS.find((tag) => tag.value === form.tags[0])?.label || form.tags[0]
+    : "";
+  const previewBranchLabel = form.showAllBranches
+    ? "All Branches"
+    : form.branchName || "Select branch";
 
   const handleToggleActive = async (deal) => {
     if (togglingId) return;
@@ -436,26 +490,32 @@ const DealsPage = () => {
   };
 
   const renderOptionQuantities = (label, options, setOptions) => (
-    <div className="space-y-1">
-      {options.map((option, index) => (
-        <div
-          key={`${option.quantity}-${index}`}
-          className="flex items-center justify-between rounded-md bg-[var(--admin-surface,#101216)] px-2 py-1 text-[11px] text-[var(--admin-muted,#D4D4D4)]"
-        >
-          <span>Quantity: {option.quantity}</span>
-          <button
-            type="button"
-            onClick={() =>
-              setOptions((current) => current.filter((_, optionIndex) => optionIndex !== index))
-            }
-            className="cursor-pointer text-[var(--admin-faint,#737373)] transition-colors hover:text-red-400"
-            title={`Remove ${label.toLowerCase()} quantity ${option.quantity}`}
-            aria-label={`Remove ${label.toLowerCase()} quantity ${option.quantity}`}
+    <div className="space-y-1.5">
+      {options.length === 0 ? (
+        <p className="text-[11px] text-[var(--admin-faint,#737373)]">No {label.toLowerCase()} quantities yet.</p>
+      ) : (
+        options.map((option, index) => (
+          <div
+            key={`${option.quantity}-${index}`}
+            className="flex items-center justify-between rounded-lg border border-[var(--admin-border,#292D35)] bg-[var(--admin-surface,#101216)] px-2.5 py-1.5 text-[11px] font-semibold text-[var(--admin-muted,#D4D4D4)]"
           >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      ))}
+            <span>
+              {label} qty · {option.quantity}
+            </span>
+            <button
+              type="button"
+              onClick={() =>
+                setOptions((current) => current.filter((_, optionIndex) => optionIndex !== index))
+              }
+              className="cursor-pointer text-[var(--admin-faint,#737373)] transition-colors hover:text-red-400"
+              title={`Remove ${label.toLowerCase()} quantity ${option.quantity}`}
+              aria-label={`Remove ${label.toLowerCase()} quantity ${option.quantity}`}
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ))
+      )}
     </div>
   );
 
@@ -757,9 +817,618 @@ const DealsPage = () => {
 
   return (
     <div
+      ref={editorTopRef}
       className="mx-auto max-w-[1500px] space-y-6 p-4 font-['Plus_Jakarta_Sans',sans-serif] sm:p-6 lg:p-8"
       data-admin-theme-context={adminTheme || "dark"}
     >
+      {isModalOpen ? (
+        <div className="animate-in fade-in space-y-5 duration-200">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex items-start gap-3">
+              <button
+                type="button"
+                onClick={closeEditor}
+                disabled={saving}
+                title="Back to deals"
+                className="mt-0.5 inline-flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-xl border border-[var(--admin-border,#2A2F38)] bg-[var(--admin-elevated,#151920)] text-[var(--admin-muted,#D4D4D4)] transition-all hover:border-[color-mix(in_srgb,var(--color-admin-accent,#FF5A1F)_50%,transparent)] hover:text-[var(--admin-text,#fff)] disabled:opacity-50"
+              >
+                <ArrowLeft className="h-4 w-4" />
+              </button>
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="font-['Outfit',sans-serif] text-xl font-black tracking-tight text-[var(--admin-text,#fff)] sm:text-2xl">
+                    {editingDeal ? "Edit Combo Deal" : "New Combo Deal"}
+                  </h2>
+                  <span className="inline-flex items-center gap-1 rounded-md bg-[color-mix(in_srgb,var(--color-admin-accent,#FF5A1F)_10%,transparent)] px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[var(--color-admin-accent,#FF5A1F)]">
+                    <Sparkles className="h-3 w-3" />
+                    Live preview
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-[var(--admin-subtle,#A3A3A3)] sm:text-sm">
+                  Build the offer step by step — basics, pricing, schedule, then combo items.
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+              <button
+                type="button"
+                onClick={closeEditor}
+                disabled={saving}
+                className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-[var(--admin-border,#2A2F38)] bg-[var(--admin-elevated,#151920)] px-4 py-2.5 text-sm font-bold text-[var(--admin-muted,#D4D4D4)] transition-all hover:text-[var(--admin-text,#fff)] disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                form="deal-editor-form"
+                disabled={saving}
+                className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-[var(--color-admin-accent,#FF5A1F)] px-4 py-2.5 text-sm font-bold text-white transition-all hover:-translate-y-0.5 hover:bg-[var(--color-admin-accent-hover,#E04810)] active:translate-y-0 disabled:opacity-60"
+              >
+                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                {editingDeal ? "Save Changes" : "Publish Deal"}
+              </button>
+            </div>
+          </div>
+
+          <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
+            {EDITOR_STEPS.map((step, index) => {
+              const done = editorStep > step.id;
+              const active = editorStep === step.id;
+              return (
+                <button
+                  key={step.id}
+                  type="button"
+                  onClick={() => setEditorStep(step.id)}
+                  className={`group flex min-w-[9rem] flex-1 cursor-pointer items-center gap-2.5 rounded-xl border px-3 py-2.5 text-left transition-all ${
+                    active
+                      ? "border-[color-mix(in_srgb,var(--color-admin-accent,#FF5A1F)_60%,transparent)] bg-gradient-to-br from-[color-mix(in_srgb,var(--color-admin-accent,#FF5A1F)_15%,transparent)] to-transparent"
+                      : done
+                        ? "border-emerald-500/30 bg-emerald-500/5"
+                        : "border-[var(--admin-border,#2A2F38)] bg-[var(--admin-elevated,#14171C)] hover:border-[var(--admin-hover,#3A404C)]"
+                  }`}
+                >
+                  <span
+                    className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-xs font-black ${
+                      active
+                        ? "bg-[var(--color-admin-accent,#FF5A1F)] text-white"
+                        : done
+                          ? "bg-emerald-500/20 text-emerald-400"
+                          : "bg-[var(--admin-hover,#1D2128)] text-[var(--admin-faint,#737373)]"
+                    }`}
+                  >
+                    {done && !active ? <Check className="h-3.5 w-3.5" /> : index + 1}
+                  </span>
+                  <span className="min-w-0">
+                    <span
+                      className={`block text-xs font-black ${active ? "text-[var(--admin-text,#fff)]" : "text-[var(--admin-muted,#D4D4D4)]"}`}
+                    >
+                      {step.label}
+                    </span>
+                    <span className="block truncate text-[10px] text-[var(--admin-faint,#737373)]">
+                      {step.hint}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(280px,360px)]">
+            <form
+              id="deal-editor-form"
+              onSubmit={(event) => void handleSave(event)}
+              className={`${SURFACE} space-y-5 p-4 sm:p-5`}
+            >
+              {editorStep === 0 && (
+                <div className="animate-in fade-in space-y-4 duration-200">
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <label className="text-xs font-bold text-[var(--admin-muted,#D4D4D4)] sm:col-span-2">
+                      Deal Name *
+                      <input
+                        required
+                        value={form.name}
+                        onChange={(event) => setForm({ ...form, name: event.target.value })}
+                        placeholder="e.g. Family Burger Deal"
+                        className={INPUT}
+                      />
+                    </label>
+
+                    <div className="space-y-2 rounded-xl border border-[var(--admin-border,#292D35)] bg-[var(--admin-surface,#0F1217)]/80 p-3.5 sm:col-span-2">
+                      <p className="text-xs font-bold text-[var(--admin-muted,#D4D4D4)]">Branch *</p>
+                      <label className="flex cursor-pointer items-center gap-2.5">
+                        <input
+                          type="checkbox"
+                          checked={form.showAllBranches === true}
+                          onChange={(event) =>
+                            setForm({
+                              ...form,
+                              showAllBranches: event.target.checked,
+                              branchName: event.target.checked
+                                ? ""
+                                : form.branchName ||
+                                  branchName ||
+                                  liveBranches[0]?.city ||
+                                  liveBranches[0]?.name ||
+                                  ""
+                            })
+                          }
+                          className="rounded border-[var(--admin-border,#292D35)] text-[var(--color-admin-accent,#FF5A1F)]"
+                        />
+                        <span className="text-[12px] font-semibold text-[var(--admin-muted,#D4D4D4)]">
+                          Show this deal in all branches
+                        </span>
+                      </label>
+                      <select
+                        disabled={form.showAllBranches === true}
+                        value={form.showAllBranches ? "" : form.branchName || ""}
+                        onChange={(event) =>
+                          setForm({
+                            ...form,
+                            showAllBranches: false,
+                            branchName: event.target.value
+                          })
+                        }
+                        className={`${INPUT} disabled:cursor-not-allowed disabled:opacity-50`}
+                      >
+                        <option value="">Select branch…</option>
+                        {liveBranches.map((branch) => {
+                          const value = branch.city || branch.shortName || branch.name;
+                          return (
+                            <option key={branch.id} value={value}>
+                              {branch.name}
+                              {branch.branchCode || branch.shortName
+                                ? ` (${branch.branchCode || branch.shortName})`
+                                : ""}
+                            </option>
+                          );
+                        })}
+                      </select>
+                      <p className="text-[11px] text-[var(--admin-faint,#737373)]">
+                        {form.showAllBranches
+                          ? "Deal will appear across every branch."
+                          : "Choose the branch where this deal should appear."}
+                      </p>
+                    </div>
+
+                    <label className="text-xs font-bold text-[var(--admin-muted,#D4D4D4)] sm:col-span-2">
+                      Short Description *
+                      <textarea
+                        required
+                        rows={3}
+                        value={form.shortDescription}
+                        onChange={(event) =>
+                          setForm({ ...form, shortDescription: event.target.value })
+                        }
+                        placeholder="2 Burgers + Fries + 2 Drinks"
+                        className={`${INPUT} min-h-[5rem] resize-y`}
+                      />
+                    </label>
+
+                    <div className="sm:col-span-2">
+                      <CatalogImageField
+                        label="Deal Image *"
+                        imageUrl={form.image}
+                        showUrlInput={false}
+                        onImageChange={(url) => setForm({ ...form, image: url })}
+                        uploadType="product"
+                        frontendDomainUrl={domain}
+                        onError={(message) => addToast("Upload Failed", message, "error")}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {editorStep === 1 && (
+                <div className="animate-in fade-in space-y-4 duration-200">
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <label className="text-xs font-bold text-[var(--admin-muted,#D4D4D4)]">
+                      Original Price *
+                      <input
+                        required
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={form.originalPrice}
+                        onChange={(event) =>
+                          setForm({ ...form, originalPrice: event.target.value })
+                        }
+                        placeholder="1200"
+                        className={INPUT}
+                      />
+                    </label>
+                    <label className="text-xs font-bold text-[var(--admin-muted,#D4D4D4)]">
+                      Deal Price *
+                      <input
+                        required
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={form.dealPrice}
+                        onChange={(event) => setForm({ ...form, dealPrice: event.target.value })}
+                        placeholder="899"
+                        className={INPUT}
+                      />
+                    </label>
+                    <label className="text-xs font-bold text-[var(--admin-muted,#D4D4D4)]">
+                      Display Order
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={form.displayOrder}
+                        onChange={(event) =>
+                          setForm({ ...form, displayOrder: event.target.value })
+                        }
+                        className={INPUT}
+                      />
+                    </label>
+                    <div className="rounded-xl border border-[var(--admin-border,#292D35)] bg-[var(--admin-surface,#0F1217)]/80 p-3.5">
+                      <p className="mb-2 text-xs font-bold text-[var(--admin-muted,#D4D4D4)]">Savings</p>
+                      <p className="font-['Outfit',sans-serif] text-2xl font-black text-[var(--admin-text,#fff)]">
+                        {previewDiscountPct}%
+                      </p>
+                      <p className="mt-1 text-[11px] text-[var(--admin-faint,#737373)]">
+                        Customer saves {formatPrice(Math.max(0, previewOriginal - previewDeal))}
+                      </p>
+                    </div>
+                  </div>
+
+                  <fieldset className="space-y-2">
+                    <legend className="text-xs font-bold text-[var(--admin-muted,#D4D4D4)]">Deal Tag</legend>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      <label
+                        className={`flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2.5 transition-colors ${
+                          form.tags.length === 0
+                            ? "border-[color-mix(in_srgb,var(--color-admin-accent,#FF5A1F)_50%,transparent)] bg-[color-mix(in_srgb,var(--color-admin-accent,#FF5A1F)_10%,transparent)]"
+                            : "border-[var(--admin-border,#292D35)] bg-[var(--admin-surface,#101216)] hover:border-[var(--admin-hover,#3A404A)]"
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="deal-tag"
+                          checked={form.tags.length === 0}
+                          onChange={() => setForm({ ...form, tags: [] })}
+                          className="border-[var(--admin-border,#292D35)] text-[var(--color-admin-accent,#FF5A1F)]"
+                        />
+                        <span className="text-[12px] font-semibold text-[var(--admin-muted,#D4D4D4)]">
+                          No tag
+                        </span>
+                      </label>
+                      {RESTAURANT_DEAL_TAGS.map((tag) => (
+                        <label
+                          key={tag.value}
+                          className={`flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2.5 transition-colors ${
+                            form.tags[0] === tag.value
+                              ? "border-[color-mix(in_srgb,var(--color-admin-accent,#FF5A1F)_50%,transparent)] bg-[color-mix(in_srgb,var(--color-admin-accent,#FF5A1F)_10%,transparent)]"
+                              : "border-[var(--admin-border,#292D35)] bg-[var(--admin-surface,#101216)] hover:border-[var(--admin-hover,#3A404A)]"
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name="deal-tag"
+                            checked={form.tags[0] === tag.value}
+                            onChange={() => setForm({ ...form, tags: [tag.value] })}
+                            className="border-[var(--admin-border,#292D35)] text-[var(--color-admin-accent,#FF5A1F)]"
+                          />
+                          <span className="text-[12px] font-semibold text-[var(--admin-muted,#D4D4D4)]">
+                            {tag.label}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
+
+                  <label className="flex cursor-pointer items-center gap-2.5 rounded-xl border border-[var(--admin-border,#292D35)] bg-[var(--admin-surface,#0F1217)]/80 p-3.5">
+                    <input
+                      type="checkbox"
+                      checked={form.isActive}
+                      onChange={(event) => setForm({ ...form, isActive: event.target.checked })}
+                      className="rounded border-[var(--admin-border,#292D35)] text-[var(--color-admin-accent,#FF5A1F)]"
+                    />
+                    <span className="text-[12px] font-semibold text-[var(--admin-muted,#D4D4D4)]">
+                      Active & displayed on website
+                    </span>
+                  </label>
+                </div>
+              )}
+
+              {editorStep === 2 && (
+                <div className="animate-in fade-in space-y-4 duration-200">
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <label className="text-xs font-bold text-[var(--admin-muted,#D4D4D4)]">
+                      <span className="mb-1 inline-flex items-center gap-1.5">
+                        <Calendar className="h-3.5 w-3.5 text-[var(--color-admin-accent,#FF5A1F)]" />
+                        Start Date
+                      </span>
+                      <input
+                        type="datetime-local"
+                        value={form.startDate}
+                        onChange={(event) => setForm({ ...form, startDate: event.target.value })}
+                        className={INPUT}
+                      />
+                    </label>
+                    <label className="text-xs font-bold text-[var(--admin-muted,#D4D4D4)]">
+                      <span className="mb-1 inline-flex items-center gap-1.5">
+                        <Calendar className="h-3.5 w-3.5 text-[var(--color-admin-accent,#FF5A1F)]" />
+                        End Date
+                      </span>
+                      <input
+                        type="datetime-local"
+                        value={form.endDate}
+                        onChange={(event) => setForm({ ...form, endDate: event.target.value })}
+                        className={INPUT}
+                      />
+                    </label>
+                  </div>
+                  <label className="block text-xs font-bold text-[var(--admin-muted,#D4D4D4)]">
+                    Terms & Conditions
+                    <textarea
+                      rows={4}
+                      value={form.termsAndConditions}
+                      onChange={(event) =>
+                        setForm({ ...form, termsAndConditions: event.target.value })
+                      }
+                      placeholder="Dine-in only. Not valid with other offers."
+                      className={`${INPUT} min-h-[7rem] resize-y`}
+                    />
+                  </label>
+                  <p className="rounded-xl border border-[var(--admin-border,#292D35)] bg-[var(--admin-surface,#0F1217)]/80 px-3.5 py-3 text-[11px] leading-relaxed text-[var(--admin-faint,#737373)]">
+                    Leave dates empty for an open-ended deal. End date can be date-only or date-time.
+                  </p>
+                </div>
+              )}
+
+              {editorStep === 3 && (
+                <div className="animate-in fade-in space-y-4 duration-200">
+                  <div className="space-y-3 rounded-xl border border-[var(--admin-border,#292D35)] bg-[var(--admin-surface,#101216)] p-3.5">
+                    <p className="text-xs font-bold text-[var(--admin-muted,#D4D4D4)]">Add combo item *</p>
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_110px_auto]">
+                      <input
+                        value={newItemName}
+                        onChange={(event) => setNewItemName(event.target.value)}
+                        placeholder="Item name (e.g. Burger)"
+                        className={INPUT}
+                      />
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={newItemQuantity}
+                        onChange={(event) => setNewItemQuantity(event.target.value)}
+                        placeholder="Qty"
+                        className={INPUT}
+                        aria-label="Item quantity"
+                      />
+                      <button
+                        type="button"
+                        onClick={addItem}
+                        disabled={!newItemName.trim()}
+                        title="Add item to deal"
+                        className="inline-flex cursor-pointer items-center justify-center gap-1.5 rounded-xl bg-[var(--color-admin-accent,#FF5A1F)] px-3 py-2 text-sm font-bold text-white transition-all hover:-translate-y-0.5 hover:bg-[var(--color-admin-accent-hover,#E04810)] disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <Plus className="h-4 w-4" />
+                        Add
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                      {[
+                        {
+                          label: "Size",
+                          value: sizeQuantity,
+                          setValue: setSizeQuantity,
+                          options: sizeOptions,
+                          setOptions: setSizeOptions
+                        },
+                        {
+                          label: "Add-on",
+                          value: addonQuantity,
+                          setValue: setAddonQuantity,
+                          options: addonOptions,
+                          setOptions: setAddonOptions
+                        },
+                        {
+                          label: "Extra",
+                          value: extraQuantity,
+                          setValue: setExtraQuantity,
+                          options: extraOptions,
+                          setOptions: setExtraOptions
+                        }
+                      ].map((group) => (
+                        <div
+                          key={group.label}
+                          className="space-y-2 rounded-xl border border-[var(--admin-border,#292D35)] bg-[var(--admin-elevated,#14171C)] p-3"
+                        >
+                          <label className="block text-xs font-bold text-[var(--admin-muted,#D4D4D4)]">
+                            {group.label} quantities
+                          </label>
+                          <div className="flex gap-2">
+                            <input
+                              type="number"
+                              min="1"
+                              step="1"
+                              value={group.value}
+                              onChange={(event) => group.setValue(event.target.value)}
+                              placeholder="Qty"
+                              className={`${INPUT} min-w-0`}
+                            />
+                            <button
+                              type="button"
+                              onClick={() =>
+                                addQuantityOption(group.value, group.setOptions, () =>
+                                  group.setValue("")
+                                )
+                              }
+                              title={`Add ${group.label.toLowerCase()} quantity`}
+                              className="cursor-pointer rounded-xl bg-[var(--admin-hover,#252830)] px-3 text-xs font-bold text-white transition-colors hover:bg-[var(--color-admin-accent,#FF5A1F)]"
+                            >
+                              Add
+                            </button>
+                          </div>
+                          {renderOptionQuantities(group.label, group.options, group.setOptions)}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <p className="text-xs font-bold text-[var(--admin-muted,#D4D4D4)]">
+                      Items in this deal ({form.items.length})
+                    </p>
+                    {form.items.length === 0 ? (
+                      <p className="rounded-xl border border-dashed border-[var(--admin-border,#292D35)] px-4 py-6 text-center text-xs text-[var(--admin-faint,#737373)]">
+                        No items yet. Add at least one combo item before publishing.
+                      </p>
+                    ) : (
+                      form.items.map((item, index) => (
+                        <div
+                          key={`${item.name}-${index}`}
+                          className="flex items-start justify-between gap-3 rounded-xl border border-[var(--admin-border,#292D35)] bg-[var(--admin-hover,#1D2128)] px-3.5 py-3"
+                        >
+                          <div className="min-w-0">
+                            <p className="text-sm font-bold text-[var(--admin-text,#fff)]">
+                              {item.quantity} × {item.name}
+                            </p>
+                            <p className="mt-1 text-[11px] leading-relaxed text-[var(--admin-faint,#737373)]">
+                              {[
+                                ...(item.sizes || []).map(
+                                  (option) => `Size qty ${option.quantity}`
+                                ),
+                                ...(item.addons || []).map(
+                                  (option) => `Add-on qty ${option.quantity}`
+                                ),
+                                ...(item.extras || []).map(
+                                  (option) => `Extra qty ${option.quantity}`
+                                )
+                              ].join(" · ") || "No size / add-on / extra quantities"}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setForm({
+                                ...form,
+                                items: form.items.filter((_, itemIndex) => itemIndex !== index)
+                              })
+                            }
+                            className="cursor-pointer rounded-lg p-1.5 text-[var(--admin-faint,#737373)] transition-colors hover:bg-red-500/10 hover:text-red-400"
+                            title={`Remove ${item.name}`}
+                            aria-label={`Remove ${item.name}`}
+                          >
+                            <X className="h-4 w-4" />
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex flex-col-reverse gap-2 border-t border-[var(--admin-border,#2A2F38)] pt-4 sm:flex-row sm:items-center sm:justify-between">
+                <button
+                  type="button"
+                  disabled={editorStep === 0 || saving}
+                  onClick={() => setEditorStep((step) => (step > 0 ? step - 1 : step))}
+                  className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-[var(--admin-border,#2A2F38)] bg-[var(--admin-elevated,#151920)] px-4 py-2.5 text-sm font-bold text-[var(--admin-muted,#D4D4D4)] transition-all disabled:opacity-40"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                  Back
+                </button>
+                {editorStep < 3 ? (
+                  <button
+                    type="button"
+                    onClick={() => setEditorStep((step) => (step < 3 ? step + 1 : step))}
+                    className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-[var(--color-admin-accent,#FF5A1F)] px-4 py-2.5 text-sm font-bold text-white transition-all hover:bg-[var(--color-admin-accent-hover,#E04810)]"
+                  >
+                    Continue
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    disabled={saving}
+                    className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-[var(--color-admin-accent,#FF5A1F)] px-4 py-2.5 text-sm font-bold text-white transition-all hover:bg-[var(--color-admin-accent-hover,#E04810)] disabled:opacity-60"
+                  >
+                    {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                    {editingDeal ? "Save Changes" : "Publish Deal"}
+                  </button>
+                )}
+              </div>
+            </form>
+
+            <aside className="h-fit space-y-3 xl:sticky xl:top-6">
+              <div className="flex items-center gap-2 text-xs font-bold text-[var(--admin-subtle,#A3A3A3)]">
+                <Eye className="h-3.5 w-3.5 text-[var(--color-admin-accent,#FF5A1F)]" />
+                Deal card preview
+              </div>
+              <div
+                className={`overflow-hidden rounded-2xl border border-[var(--admin-border,#2A2F38)] shadow-[0_20px_50px_-20px_rgba(0,0,0,0.45)] ${isLight ? "bg-white" : "bg-[#0A0C10]"}`}
+              >
+                <div className="relative aspect-[4/3]">
+                  {form.image ? (
+                    <img
+                      src={form.image}
+                      alt={form.name || "Deal preview"}
+                      className="absolute inset-0 h-full w-full object-cover"
+                    />
+                  ) : (
+                    <div className="absolute inset-0 flex items-center justify-center bg-[var(--admin-elevated,#151920)] text-[var(--admin-faint,#737373)]">
+                      <BadgePercent className="h-10 w-10" />
+                    </div>
+                  )}
+                  <div className="absolute inset-0 bg-gradient-to-t from-black via-black/40 to-transparent" />
+                  {previewTagLabel ? (
+                    <span className="absolute left-3 top-3 rounded-md bg-[var(--color-admin-accent,#FF5A1F)] px-2.5 py-1 text-[10px] font-black uppercase text-white">
+                      {previewTagLabel}
+                    </span>
+                  ) : null}
+                  {previewDiscountPct > 0 ? (
+                    <span className="absolute right-3 top-3 rounded-md bg-emerald-500 px-2.5 py-1 text-[10px] font-black uppercase text-white">
+                      {previewDiscountPct}% OFF
+                    </span>
+                  ) : null}
+                  <div className="absolute inset-x-0 bottom-0 space-y-1 p-4">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-admin-accent,#FF5A1F)]">
+                      {previewBranchLabel}
+                    </p>
+                    <h3 className="line-clamp-2 text-lg font-black text-white">
+                      {form.name.trim() || "Deal title"}
+                    </h3>
+                    <p className="line-clamp-2 text-[11px] text-neutral-300">
+                      {form.shortDescription.trim() || "Short description appears here"}
+                    </p>
+                    <div className="flex items-baseline gap-2 pt-1">
+                      <span className="text-base font-black text-white">
+                        {formatPrice(previewDeal || 0)}
+                      </span>
+                      {previewOriginal > previewDeal && previewDeal >= 0 ? (
+                        <span className="text-xs text-neutral-400 line-through">
+                          {formatPrice(previewOriginal)}
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 border-t border-[var(--admin-border,#1F242C)] bg-[var(--admin-surface,#11151B)] px-3 py-2.5 text-[10px] text-[var(--admin-faint,#737373)]">
+                  <span
+                    className={`rounded-md px-2 py-0.5 font-bold ${
+                      form.isActive
+                        ? "bg-emerald-500/15 text-emerald-400"
+                        : "bg-[var(--admin-hover,#252830)] text-[var(--admin-subtle,#A3A3A3)]"
+                    }`}
+                  >
+                    {form.isActive ? "Active" : "Inactive"}
+                  </span>
+                  <span className="truncate">{form.items.length} item{form.items.length === 1 ? "" : "s"}</span>
+                  <span className="ml-auto tabular-nums">Order {form.displayOrder || 1}</span>
+                </div>
+              </div>
+            </aside>
+          </div>
+        </div>
+      ) : (
+        <>
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h2 className="flex items-center gap-2.5 font-['Outfit',sans-serif] text-xl font-black tracking-tight text-[var(--admin-text,#fff)] sm:text-2xl">
@@ -1351,387 +2020,7 @@ const DealsPage = () => {
         </div>
       )}
 
-      {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4">
-          <button
-            type="button"
-            aria-label="Close deal form"
-            className="fixed inset-0 bg-black/70 backdrop-blur-xs"
-            onClick={() => setIsModalOpen(false)}
-          />
-          <div
-            className={`relative z-10 flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-[var(--admin-border,#292D35)] bg-[var(--admin-elevated,#14171C)] shadow-2xl`}
-          >
-            <div className="flex items-center justify-between border-b border-[var(--admin-border,#292D35)] p-5">
-              <h3 className="text-lg font-black text-[var(--admin-text,#fff)]">
-                {editingDeal ? "Edit Combo Deal" : "Create New Combo Deal"}
-              </h3>
-              <button
-                type="button"
-                onClick={() => setIsModalOpen(false)}
-                className="cursor-pointer rounded-lg p-1 text-[var(--admin-subtle,#A3A3A3)] transition-colors hover:bg-[var(--admin-hover,#252830)] hover:text-[var(--admin-text,#fff)]"
-                aria-label="Close deal form"
-                title="Close"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            <form onSubmit={handleSave} className="no-scrollbar flex-1 space-y-4 overflow-y-auto p-5 text-xs">
-              <div>
-                <label className="mb-1 block font-bold text-[var(--admin-muted,#D4D4D4)]">Deal Name *</label>
-                <input
-                  required
-                  value={form.name}
-                  onChange={(event) => setForm({ ...form, name: event.target.value })}
-                  placeholder="e.g. Family Burger Deal"
-                  className={INPUT}
-                />
-              </div>
-              <label className="flex items-center gap-2 text-[var(--admin-muted,#D4D4D4)]">
-                <input
-                  type="checkbox"
-                  checked={form.showAllBranches}
-                  onChange={(event) =>
-                    setForm({ ...form, showAllBranches: event.target.checked })
-                  }
-                />
-                Show this deal at all branches
-              </label>
-              {!form.showAllBranches && (
-                <div>
-                  <label className="mb-1 block font-bold text-[var(--admin-muted,#D4D4D4)]">Branch *</label>
-                  <select
-                    required
-                    value={form.branchName}
-                    onChange={(event) => setForm({ ...form, branchName: event.target.value })}
-                    className={INPUT}
-                  >
-                    <option value="">Select a branch</option>
-                    {liveBranches.map((branch) => (
-                      <option
-                        key={branch.id}
-                        value={branch.city || branch.shortName || branch.name}
-                      >
-                        {branch.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-              <div>
-                <label className="mb-1 block font-bold text-[var(--admin-muted,#D4D4D4)]">
-                  Short Description *
-                </label>
-                <textarea
-                  required
-                  rows={2}
-                  value={form.shortDescription}
-                  onChange={(event) =>
-                    setForm({ ...form, shortDescription: event.target.value })
-                  }
-                  placeholder="2 Burgers + Fries + 2 Drinks"
-                  className={`${INPUT} resize-y`}
-                />
-              </div>
-              <CatalogImageField
-                label="Deal Image *"
-                imageUrl={form.image}
-                showUrlInput={false}
-                onImageChange={(url) => setForm({ ...form, image: url })}
-                uploadType="product"
-                frontendDomainUrl={domain}
-                onError={(message) => addToast("Upload Failed", message, "error")}
-              />
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <label className="font-bold text-[var(--admin-muted,#D4D4D4)]">
-                  Original Price *
-                  <input
-                    required
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={form.originalPrice}
-                    onChange={(event) =>
-                      setForm({ ...form, originalPrice: event.target.value })
-                    }
-                    placeholder="1200"
-                    className={`${INPUT} mt-1`}
-                  />
-                </label>
-                <label className="font-bold text-[var(--admin-muted,#D4D4D4)]">
-                  Deal Price *
-                  <input
-                    required
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={form.dealPrice}
-                    onChange={(event) => setForm({ ...form, dealPrice: event.target.value })}
-                    placeholder="899"
-                    className={`${INPUT} mt-1`}
-                  />
-                </label>
-              </div>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <label className="font-bold text-[var(--admin-muted,#D4D4D4)]">
-                  <Calendar className="mr-1 inline h-3.5 w-3.5" />
-                  Start Date
-                  <input
-                    type="datetime-local"
-                    value={form.startDate}
-                    onChange={(event) => setForm({ ...form, startDate: event.target.value })}
-                    className={`${INPUT} mt-1`}
-                  />
-                </label>
-                <label className="font-bold text-[var(--admin-muted,#D4D4D4)]">
-                  <Calendar className="mr-1 inline h-3.5 w-3.5" />
-                  End Date
-                  <input
-                    type="datetime-local"
-                    value={form.endDate}
-                    onChange={(event) => setForm({ ...form, endDate: event.target.value })}
-                    className={`${INPUT} mt-1`}
-                  />
-                </label>
-              </div>
-              <fieldset>
-                <legend className="mb-2 block font-bold text-[var(--admin-muted,#D4D4D4)]">Deal Tags</legend>
-                <div className="flex flex-wrap gap-4">
-                  <label className="flex cursor-pointer items-center gap-2 text-[var(--admin-muted,#D4D4D4)]">
-                    <input
-                      type="radio"
-                      name="deal-tag"
-                      checked={form.tags.length === 0}
-                      onChange={() => setForm({ ...form, tags: [] })}
-                    />
-                    No tag
-                  </label>
-                  {RESTAURANT_DEAL_TAGS.map((tag) => (
-                    <label
-                      key={tag.value}
-                      className="flex cursor-pointer items-center gap-2 text-[var(--admin-muted,#D4D4D4)]"
-                    >
-                      <input
-                        type="radio"
-                        name="deal-tag"
-                        checked={form.tags[0] === tag.value}
-                        onChange={() => setForm({ ...form, tags: [tag.value] })}
-                      />
-                      {tag.label}
-                    </label>
-                  ))}
-                </div>
-              </fieldset>
-              <div>
-                <label className="mb-1 block font-bold text-[var(--admin-muted,#D4D4D4)]">
-                  Items in Deal *
-                </label>
-                <div className="space-y-3 rounded-xl border border-[var(--admin-border,#292D35)] bg-[var(--admin-surface,#101216)] p-3">
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_110px_auto]">
-                    <input
-                      value={newItemName}
-                      onChange={(event) => setNewItemName(event.target.value)}
-                      placeholder="Item name (e.g. Burger)"
-                      className={INPUT}
-                    />
-                    <input
-                      type="number"
-                      min="1"
-                      step="1"
-                      value={newItemQuantity}
-                      onChange={(event) => setNewItemQuantity(event.target.value)}
-                      placeholder="Quantity"
-                      className={INPUT}
-                      aria-label="Item quantity"
-                    />
-                    <button
-                      type="button"
-                      onClick={addItem}
-                      disabled={!newItemName.trim()}
-                      title="Add item to deal"
-                      className="inline-flex cursor-pointer items-center justify-center gap-1 rounded-xl bg-[var(--color-admin-accent,#FF5A1F)] px-3 font-bold text-white transition-all hover:-translate-y-0.5 hover:bg-[var(--color-admin-accent-hover,#E04810)] disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      <Plus className="h-4 w-4" /> Add Item
-                    </button>
-                  </div>
-
-                  <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                    <div className="space-y-2 rounded-lg border border-[var(--admin-border,#292D35)] p-2">
-                      <label className="block font-bold text-[var(--admin-muted,#D4D4D4)]">Size</label>
-                      <div className="flex gap-2">
-                        <input
-                          type="number"
-                          min="1"
-                          step="1"
-                          value={sizeQuantity}
-                          onChange={(event) => setSizeQuantity(event.target.value)}
-                          placeholder="Quantity"
-                          className={`${INPUT} min-w-0`}
-                        />
-                        <button
-                          type="button"
-                          onClick={() =>
-                            addQuantityOption(sizeQuantity, setSizeOptions, () => setSizeQuantity(""))
-                          }
-                          title="Add size quantity"
-                          className="cursor-pointer rounded-lg bg-[var(--admin-hover,#252830)] px-3 font-bold text-white transition-colors hover:bg-[var(--color-admin-accent,#FF5A1F)]"
-                        >
-                          Add
-                        </button>
-                      </div>
-                      {renderOptionQuantities("Size", sizeOptions, setSizeOptions)}
-                    </div>
-
-                    <div className="space-y-2 rounded-lg border border-[var(--admin-border,#292D35)] p-2">
-                      <label className="block font-bold text-[var(--admin-muted,#D4D4D4)]">Add-on</label>
-                      <div className="flex gap-2">
-                        <input
-                          type="number"
-                          min="1"
-                          step="1"
-                          value={addonQuantity}
-                          onChange={(event) => setAddonQuantity(event.target.value)}
-                          placeholder="Quantity"
-                          className={`${INPUT} min-w-0`}
-                        />
-                        <button
-                          type="button"
-                          onClick={() =>
-                            addQuantityOption(addonQuantity, setAddonOptions, () =>
-                              setAddonQuantity("")
-                            )
-                          }
-                          title="Add add-on quantity"
-                          className="cursor-pointer rounded-lg bg-[var(--admin-hover,#252830)] px-3 font-bold text-white transition-colors hover:bg-[var(--color-admin-accent,#FF5A1F)]"
-                        >
-                          Add
-                        </button>
-                      </div>
-                      {renderOptionQuantities("Add-on", addonOptions, setAddonOptions)}
-                    </div>
-
-                    <div className="space-y-2 rounded-lg border border-[var(--admin-border,#292D35)] p-2">
-                      <label className="block font-bold text-[var(--admin-muted,#D4D4D4)]">Extra</label>
-                      <div className="flex gap-2">
-                        <input
-                          type="number"
-                          min="1"
-                          step="1"
-                          value={extraQuantity}
-                          onChange={(event) => setExtraQuantity(event.target.value)}
-                          placeholder="Quantity"
-                          className={`${INPUT} min-w-0`}
-                        />
-                        <button
-                          type="button"
-                          onClick={() =>
-                            addQuantityOption(extraQuantity, setExtraOptions, () =>
-                              setExtraQuantity("")
-                            )
-                          }
-                          title="Add extra quantity"
-                          className="cursor-pointer rounded-lg bg-[var(--admin-hover,#252830)] px-3 font-bold text-white transition-colors hover:bg-[var(--color-admin-accent,#FF5A1F)]"
-                        >
-                          Add
-                        </button>
-                      </div>
-                      {renderOptionQuantities("Extra", extraOptions, setExtraOptions)}
-                    </div>
-                  </div>
-                </div>
-                <div className="mt-2 space-y-1">
-                  {form.items.map((item, index) => (
-                    <div
-                      key={`${item.name}-${index}`}
-                      className="flex justify-between rounded-lg bg-[var(--admin-hover,#1D2128)] px-3 py-2 text-[var(--admin-muted,#D4D4D4)]"
-                    >
-                      <span>
-                        {item.quantity} × {item.name}
-                        {[
-                          ...(item.sizes || []).map((option) => `Size quantity: ${option.quantity}`),
-                          ...(item.addons || []).map((option) => `Add-on quantity: ${option.quantity}`),
-                          ...(item.extras || []).map((option) => `Extra quantity: ${option.quantity}`)
-                        ]
-                          .map((detail) => ` · ${detail}`)
-                          .join("")}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setForm({
-                            ...form,
-                            items: form.items.filter((_, itemIndex) => itemIndex !== index)
-                          })
-                        }
-                        className="cursor-pointer text-[var(--admin-faint,#737373)] transition-colors hover:text-red-400"
-                        title={`Remove ${item.name}`}
-                        aria-label={`Remove ${item.name}`}
-                      >
-                        <X className="h-4 w-4" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <label className="mb-1 block font-bold text-[var(--admin-muted,#D4D4D4)]">
-                  Terms & Conditions
-                </label>
-                <textarea
-                  rows={2}
-                  value={form.termsAndConditions}
-                  onChange={(event) =>
-                    setForm({ ...form, termsAndConditions: event.target.value })
-                  }
-                  placeholder="Dine-in only. Not valid with other offers."
-                  className={`${INPUT} resize-y`}
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <label className="font-bold text-[var(--admin-muted,#D4D4D4)]">
-                  Display Order
-                  <input
-                    type="number"
-                    min="1"
-                    step="1"
-                    value={form.displayOrder}
-                    onChange={(event) =>
-                      setForm({ ...form, displayOrder: event.target.value })
-                    }
-                    className={`${INPUT} mt-1`}
-                  />
-                </label>
-                <label className="flex items-center gap-2 self-end pb-2 text-[var(--admin-muted,#D4D4D4)]">
-                  <input
-                    type="checkbox"
-                    checked={form.isActive}
-                    onChange={(event) => setForm({ ...form, isActive: event.target.checked })}
-                  />
-                  Active on website
-                </label>
-              </div>
-              <div className="flex justify-end gap-2 border-t border-[var(--admin-border,#292D35)] pt-4">
-                <button
-                  type="button"
-                  onClick={() => setIsModalOpen(false)}
-                  className="cursor-pointer rounded-xl bg-[var(--admin-hover,#1D2128)] px-4 py-2 text-[var(--admin-muted,#D4D4D4)] hover:text-[var(--admin-text,#fff)]"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={saving}
-                  title={editingDeal ? "Save deal changes" : "Create deal"}
-                  className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-[var(--color-admin-accent,#FF5A1F)] px-6 py-2 font-bold text-white hover:bg-[var(--color-admin-accent-hover,#E04810)] disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {saving && <Loader2 className="h-4 w-4 animate-spin" />}
-                  {editingDeal ? "Save Changes" : "Create Deal"}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+        </>
       )}
 
       {detailDeal && (

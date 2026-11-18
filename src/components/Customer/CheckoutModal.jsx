@@ -1,17 +1,30 @@
 import { useState, useEffect } from "react";
 import { X, CheckCircle2, Bike, ShoppingBag } from "lucide-react";
 import { useRestaurant } from '@/contexts/RestaurantContext';
+import {
+  readCheckoutDraft,
+  setPendingCheckout,
+  writeCheckoutDraft
+} from '@/shared/lib/guestCartStorage';
+import { getPublicFrontendDomainUrl } from '@/shared/lib/catalogApi';
+import { buildCheckoutPayload, checkoutUserCart } from '@/shared/lib/userCartApi';
+
 const CheckoutModal = ({
   isOpen,
   onClose,
   cartItems,
   onOrderPlaced,
   onClearCart,
+  onRequireLogin,
   selectedBranch,
   selectedArea,
-  orderMode = "delivery"
+  orderMode = "delivery",
+  branchId = "",
+  branchName = "",
+  latitude = "",
+  longitude = ""
 }) => {
-  const { customerUser, formatPrice, config } = useRestaurant();
+  const { customerUser, formatPrice, config, addToast } = useRestaurant();
   const [deliveryMethod, setDeliveryMethod] = useState(orderMode);
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
@@ -25,22 +38,56 @@ const CheckoutModal = ({
   const [paymentMethod, setPaymentMethod] = useState("cash");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [placedOrder, setPlacedOrder] = useState(null);
+
   useEffect(() => {
-    if (customerUser) {
-      if (customerUser.name) setFullName(customerUser.name);
-      if (customerUser.email) setEmail(customerUser.email);
-      if (customerUser.phone) setPhone(customerUser.phone);
-      if (customerUser.address) setAddress(customerUser.address);
-      if (customerUser.city) setCity(customerUser.city);
-    } else {
-      if (!fullName) setFullName("Guest Customer");
-      if (!phone) setPhone("+92 300 1234567");
-      if (!address) setAddress(selectedArea || selectedBranch?.address || "GT Road Branch Area");
-    }
-  }, [customerUser, selectedArea, selectedBranch]);
+    if (!isOpen) return;
+    const draft = readCheckoutDraft();
+    setDeliveryMethod(draft?.deliveryMethod || orderMode);
+    setFullName(draft?.fullName || customerUser?.name || "");
+    setEmail(draft?.email || customerUser?.email || "");
+    setPhone(draft?.phone || customerUser?.phone || "");
+    setAddress(draft?.address || customerUser?.address || selectedArea || selectedBranch?.address || "");
+    setApartment(draft?.apartment || "");
+    setCity(draft?.city || customerUser?.city || "");
+    setZipCode(draft?.zipCode || "");
+    setDeliveryNotes(draft?.deliveryNotes || "");
+    setTipPercentage(Number(draft?.tipPercentage) || 0);
+    setPaymentMethod(draft?.paymentMethod || "cash");
+    setPlacedOrder(null);
+    setIsSubmitting(false);
+  }, [isOpen, orderMode, customerUser, selectedArea, selectedBranch]);
+
   useEffect(() => {
-    setDeliveryMethod(orderMode);
-  }, [orderMode]);
+    if (!isOpen || placedOrder) return;
+    writeCheckoutDraft({
+      deliveryMethod,
+      fullName,
+      email,
+      phone,
+      address,
+      apartment,
+      city,
+      zipCode,
+      deliveryNotes,
+      tipPercentage,
+      paymentMethod
+    });
+  }, [
+    isOpen,
+    placedOrder,
+    deliveryMethod,
+    fullName,
+    email,
+    phone,
+    address,
+    apartment,
+    city,
+    zipCode,
+    deliveryNotes,
+    tipPercentage,
+    paymentMethod
+  ]);
+
   if (!isOpen) return null;
   const subtotal = cartItems.reduce((acc, item) => acc + item.totalPrice, 0);
   const branchDeliveryFee = deliveryMethod === "pickup" ? 0 : selectedBranch?.deliveryFee ?? 150;
@@ -50,33 +97,132 @@ const CheckoutModal = ({
   const tax = 0;
   const tipAmount = subtotal * tipPercentage / 100;
   const grandTotal = subtotal + deliveryFee + tax + tipAmount;
-  const handlePlaceOrder = (e) => {
+
+  const saveCheckoutDraftNow = () => {
+    writeCheckoutDraft({
+      deliveryMethod,
+      fullName,
+      email,
+      phone,
+      address,
+      apartment,
+      city,
+      zipCode,
+      deliveryNotes,
+      tipPercentage,
+      paymentMethod
+    });
+  };
+
+  const handlePlaceOrder = async (e) => {
     e.preventDefault();
-    setIsSubmitting(true);
-    setTimeout(() => {
-      const orderNumber = `BB-${Math.floor(1e5 + Math.random() * 9e5)}`;
-      const newOrder = {
-        orderId: orderNumber,
-        orderNumber,
-        createdAt: (/* @__PURE__ */ new Date()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        estimatedDeliveryTime: selectedBranch?.deliveryTime || "25 - 35 mins",
-        items: [...cartItems],
-        subtotal,
-        deliveryFee,
-        tax,
-        tip: tipAmount,
-        total: grandTotal,
+    if (!customerUser) {
+      saveCheckoutDraftNow();
+      setPendingCheckout(true);
+      addToast(
+        "Login required",
+        "Sign in to place your order. Your cart is saved.",
+        "info"
+      );
+      onRequireLogin?.({
         deliveryMethod,
-        deliveryAddress: deliveryMethod === "delivery" ? `${address}${apartment ? ", " + apartment : ""}${city ? ", " + city : ""}` : `Pick up at ${selectedBranch?.name || config.name}`,
-        customerName: fullName,
-        customerPhone: phone,
-        status: "received"
+        fullName,
+        email,
+        phone,
+        address,
+        apartment,
+        city,
+        zipCode,
+        deliveryNotes,
+        tipPercentage,
+        paymentMethod
+      });
+      return;
+    }
+
+    const resolvedBranchId = branchId || selectedBranch?.id || "";
+    const resolvedBranchName =
+      branchName || selectedBranch?.name || selectedBranch?.shortName || selectedArea || "";
+    if (!resolvedBranchId) {
+      addToast("Branch required", "Select a branch before placing your order.", "error");
+      return;
+    }
+
+    const deliveryAddressText =
+      deliveryMethod === "delivery"
+        ? `${address}${apartment ? ", " + apartment : ""}${city ? ", " + city : ""}`.trim()
+        : `Pick up at ${selectedBranch?.name || config.name}`;
+
+    setIsSubmitting(true);
+    try {
+      const payload = buildCheckoutPayload({
+        frontendDomainUrl: getPublicFrontendDomainUrl(),
+        branchId: resolvedBranchId,
+        branchName: resolvedBranchName,
+        latitude,
+        longitude,
+        orderMode: deliveryMethod || orderMode || "delivery",
+        selectedArea: selectedArea || resolvedBranchName,
+        deliveryAddress: deliveryAddressText,
+        paymentMethod,
+        deliveryFee,
+        notes: deliveryNotes || ""
+      });
+
+      const result = await checkoutUserCart(payload);
+      if (!result.ok) {
+        addToast(
+          "Checkout failed",
+          result.message || "Could not place your order. Please try again.",
+          "error"
+        );
+        return;
+      }
+
+      const orderRecord = result.order || result.data?.order || result.data || {};
+      const orderNumber =
+        orderRecord.orderNumber ||
+        orderRecord.orderId ||
+        orderRecord.id ||
+        orderRecord._id ||
+        `BB-${Math.floor(1e5 + Math.random() * 9e5)}`;
+
+      const newOrder = {
+        orderId: String(orderNumber),
+        orderNumber: String(orderNumber),
+        createdAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        estimatedDeliveryTime:
+          orderRecord.estimatedDeliveryTime ||
+          selectedBranch?.deliveryTime ||
+          "25 - 35 mins",
+        items: [...cartItems],
+        subtotal: Number(orderRecord.subtotal) || subtotal,
+        deliveryFee: Number(orderRecord.deliveryFee) || deliveryFee,
+        tax: Number(orderRecord.taxTotal ?? orderRecord.tax) || tax,
+        tip: tipAmount,
+        total: Number(orderRecord.grandTotal ?? orderRecord.total) || grandTotal,
+        deliveryMethod,
+        deliveryAddress: deliveryAddressText,
+        customerName: fullName || customerUser.name || "",
+        customerPhone: phone || customerUser.phone || "",
+        customerEmail: email || customerUser.email || "",
+        status: "received",
+        serverOrder: orderRecord
       };
+
       setPlacedOrder(newOrder);
       onOrderPlaced(newOrder);
       onClearCart();
+      addToast("Order placed", result.message || "Your order was placed successfully.", "success");
+    } catch (error) {
+      addToast(
+        "Checkout failed",
+        error instanceof Error ? error.message : "Could not place your order.",
+        "error"
+      );
+    } finally {
       setIsSubmitting(false);
-    }, 1e3);
+    }
   };
   return <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 md:p-6">
       {
@@ -211,9 +357,15 @@ const CheckoutModal = ({
                   <label className="text-xs font-bold uppercase tracking-wider text-neutral-600">
                     Contact & Customer Details
                   </label>
-                  {customerUser ? <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                  {customerUser ? (
+                    <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
                       Auto-filled from profile
-                    </span> : <span className="text-[11px] text-neutral-500">Ordering as guest</span>}
+                    </span>
+                  ) : (
+                    <span className="text-[11px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
+                      Login needed to place order
+                    </span>
+                  )}
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

@@ -7,8 +7,10 @@ const CartDrawer = ({
   cartItems,
   onUpdateQuantity,
   onRemoveItem,
+  onClearCart,
   onCheckout,
-  onBrowseMenu
+  onBrowseMenu,
+  isCartBusy = false
 }) => {
   const { currentBranch, applyPromoCode, formatPrice, currentOrderMode } = useRestaurant();
   const [promoCode, setPromoCode] = useState("");
@@ -58,12 +60,12 @@ const CartDrawer = ({
         {
     /* Top Header */
   }
-        <div className="p-5 sm:p-6 bg-white border-b border-[#EEE7DC] flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-10 h-10 rounded-2xl bg-[#E51B23]/10 text-[#E51B23] flex items-center justify-center">
+        <div className="p-5 sm:p-6 bg-white border-b border-[#EEE7DC] flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-10 h-10 rounded-2xl bg-[#E51B23]/10 text-[#E51B23] flex items-center justify-center shrink-0">
               <ShoppingBag className="w-5 h-5" />
             </div>
-            <div>
+            <div className="min-w-0">
               <h2 className="text-xl font-black text-[#191919] font-['Outfit']">
                 Your Cart
               </h2>
@@ -75,13 +77,26 @@ const CartDrawer = ({
             </div>
           </div>
 
-          <button
-    onClick={onClose}
-    className="w-9 h-9 rounded-full bg-neutral-100 hover:bg-neutral-200 text-neutral-600 flex items-center justify-center transition-colors cursor-pointer"
-    aria-label="Close cart"
-  >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            {cartItems.length > 0 && onClearCart ? (
+              <button
+                type="button"
+                onClick={() => onClearCart()}
+                disabled={isCartBusy}
+                className="text-[11px] font-bold uppercase tracking-wide text-[#E51B23] hover:bg-[#E51B23]/10 disabled:opacity-50 px-2.5 py-1.5 rounded-full border border-[#E51B23]/25 transition-colors cursor-pointer"
+                aria-label="Clear all cart items"
+              >
+                Clear all
+              </button>
+            ) : null}
+            <button
+              onClick={onClose}
+              className="w-9 h-9 rounded-full bg-neutral-100 hover:bg-neutral-200 text-neutral-600 flex items-center justify-center transition-colors cursor-pointer"
+              aria-label="Close cart"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {
@@ -142,7 +157,8 @@ const CartDrawer = ({
                     </h4>
                     <button
     onClick={() => onRemoveItem(item.cartItemId)}
-    className="text-neutral-400 hover:text-[#E51B23] p-1 transition-colors cursor-pointer"
+    disabled={isCartBusy}
+    className="text-neutral-400 hover:text-[#E51B23] disabled:opacity-50 p-1 transition-colors cursor-pointer"
     title="Remove item"
   >
                       <Trash2 className="w-4 h-4" />
@@ -173,8 +189,9 @@ const CartDrawer = ({
 
                     <div className="flex items-center gap-2 bg-[#FFF9EF] border border-[#E9E2D8] rounded-full px-2 py-0.5">
                       <button
-    onClick={() => onUpdateQuantity(item.cartItemId, item.quantity - 1)}
-    className="text-neutral-500 hover:text-[#191919] p-0.5 cursor-pointer"
+    onClick={() => onUpdateQuantity(item.cartItemId, "decrease")}
+    disabled={isCartBusy}
+    className="text-neutral-500 hover:text-[#191919] disabled:opacity-50 p-0.5 cursor-pointer"
     aria-label="Decrease quantity"
   >
                         <Minus className="w-3.5 h-3.5" />
@@ -183,8 +200,9 @@ const CartDrawer = ({
                         {item.quantity}
                       </span>
                       <button
-    onClick={() => onUpdateQuantity(item.cartItemId, item.quantity + 1)}
-    className="text-neutral-500 hover:text-[#191919] p-0.5 cursor-pointer"
+    onClick={() => onUpdateQuantity(item.cartItemId, "increase")}
+    disabled={isCartBusy}
+    className="text-neutral-500 hover:text-[#191919] disabled:opacity-50 p-0.5 cursor-pointer"
     aria-label="Increase quantity"
   >
                         <Plus className="w-3.5 h-3.5" />

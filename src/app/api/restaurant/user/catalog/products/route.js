@@ -1,0 +1,40 @@
+import { NextResponse } from "next/server";
+
+const API_BASE_URL = process.env.API_BASE_URL;
+
+async function GET(request) {
+  if (!API_BASE_URL) {
+    return NextResponse.json(
+      { message: "API_BASE_URL is not configured in .env file." },
+      { status: 503 }
+    );
+  }
+
+  const baseUrl = API_BASE_URL.replace(/\/$/, "");
+  const target = new URL(`${baseUrl}/api/restaurant/user/catalog/products`);
+  for (const key of ["frontendDomainUrl", "branchName"]) {
+    const value = request.nextUrl.searchParams.get(key);
+    if (value) target.searchParams.set(key, value);
+  }
+
+  try {
+    const response = await fetch(target.toString(), {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      cache: "no-store"
+    });
+    const text = await response.text();
+    let data;
+    try {
+      data = text ? JSON.parse(text) : { message: "Empty response from backend" };
+    } catch {
+      data = { message: text || "Backend returned non-JSON response." };
+    }
+    return NextResponse.json(data, { status: response.status });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Backend API is not reachable.";
+    return NextResponse.json({ message }, { status: 503 });
+  }
+}
+
+export { GET };

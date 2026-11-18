@@ -82,6 +82,8 @@ const emptyForm = {
   availabilityStatus: "available",
   tags: [],
   isActive: true,
+  showAllBranches: false,
+  branchName: "",
   variantName: "Regular",
   variantSize: "Regular",
   variantPortion: "1",
@@ -133,14 +135,30 @@ function formatShortDate(value) {
   });
 }
 
+function branchDisplayName(branch, fallback = "—") {
+  if (branch == null || branch === "") return fallback;
+  if (typeof branch === "string" || typeof branch === "number") return String(branch);
+  if (typeof branch === "object") {
+    const name = branch.name || branch.branchName || branch.shortName || branch.branchCode;
+    if (name) return String(name);
+  }
+  return fallback;
+}
+
 function MetaChip({ label, value }) {
+  const text =
+    value != null && typeof value === "object"
+      ? branchDisplayName(value)
+      : value == null || value === ""
+        ? "—"
+        : String(value);
   return (
     <div className="min-w-0 rounded-xl border border-[var(--admin-border,#292D35)] bg-[var(--admin-surface,#0D0F12)] px-3 py-2">
       <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--admin-faint,#737373)]">
         {label}
       </p>
-      <p className="mt-0.5 truncate text-xs font-bold text-[var(--admin-text,#fff)]" title={String(value ?? "—")}>
-        {value ?? "—"}
+      <p className="mt-0.5 truncate text-xs font-bold text-[var(--admin-text,#fff)]" title={text}>
+        {text}
       </p>
     </div>
   );
@@ -233,7 +251,11 @@ const ProductsPage = () => {
       const domain = getFrontendDomainUrl();
       const params = {
         frontendDomainUrl: domain,
-        ...(branchName && !isAllBranches ? { branchName } : {})
+        ...(isAllBranches
+          ? { showAllBranches: true }
+          : branchName
+            ? { showAllBranches: false, branchName }
+            : { showAllBranches: true })
       };
       const [cats, prods] = await Promise.all([getCategories(params), getProducts(params)]);
       if (cats.ok) {
@@ -245,7 +267,7 @@ const ProductsPage = () => {
         setProducts(prods.products);
         setApiMeta({
           count: typeof prods.count === "number" ? prods.count : prods.products.length,
-          branch: prods.branch ?? null,
+          branch: branchDisplayName(prods.branch, null),
           frontendDomainUrl: prods.frontendDomainUrl || domain,
           message: prods.message || "Products fetched successfully",
           success: prods.success !== false
@@ -431,7 +453,10 @@ const ProductsPage = () => {
       sku: formData.sku.trim(),
       categoryId: formData.category,
       description: formData.description.trim(),
-      branchName: editingProduct?.branchName || branchName,
+      showAllBranches: formData.showAllBranches === true,
+      branchName: formData.showAllBranches
+        ? ""
+        : String(formData.branchName || "").trim(),
       image: formData.image.trim(),
       tags: formData.tags,
       costPrice: parseFloat(formData.costPrice) || 0,
@@ -468,7 +493,9 @@ const ProductsPage = () => {
     setFormData({
       ...emptyForm,
       sort: String(products.length + 1),
-      category: categories[0]?.id || ""
+      category: categories[0]?.id || "",
+      showAllBranches: isAllBranches,
+      branchName: isAllBranches ? "" : branchName || liveBranches[0]?.name || ""
     });
     setVariants([]);
     setAddons([]);
@@ -480,6 +507,10 @@ const ProductsPage = () => {
   };
 
   const handleOpenEdit = (p) => {
+    const productBranch =
+      branchDisplayName(p.branchName, "") ||
+      (Array.isArray(p.branchAvailability) ? p.branchAvailability[0] : "") ||
+      "";
     setFormData({
       ...emptyForm,
       name: p.name,
@@ -509,7 +540,9 @@ const ProductsPage = () => {
           ...(popularMealIds.includes(p.id) || p.isPopular ? ["popular"] : [])
         ])
       ],
-      isActive: p.isActive !== false
+      isActive: p.isActive !== false,
+      showAllBranches: p.showAllBranches === true,
+      branchName: p.showAllBranches === true ? "" : productBranch || branchName || liveBranches[0]?.name || ""
     });
     setVariants(p.variants || []);
     setAddons(p.addons || []);
@@ -554,8 +587,9 @@ const ProductsPage = () => {
       addToast("Validation Error", "Complete availability, recipe, and notes.", "error");
       return;
     }
-    if (!(editingProduct?.branchName || branchName)) {
-      addToast("Branch Required", "Select a branch before saving a product.", "error");
+    if (!formData.showAllBranches && !String(formData.branchName || "").trim()) {
+      setEditorStep(0);
+      addToast("Branch Required", "Select a branch, or choose All Branches.", "error");
       return;
     }
     if (formData.availableDays.length === 0) {
@@ -602,7 +636,8 @@ const ProductsPage = () => {
       sku: product.sku || "",
       categoryId: product.category,
       description: product.description || "",
-      branchName: product.branchName || branchName,
+      showAllBranches: product.showAllBranches === true,
+      branchName: product.showAllBranches === true ? "" : product.branchName || branchName,
       image: product.image || "",
       tags: product.tags || [],
       costPrice: product.costPrice || 0,
@@ -726,7 +761,7 @@ const ProductsPage = () => {
           <FieldRow label="SKU">{product.sku || "—"}</FieldRow>
           <FieldRow label="Sort">{product.sort ?? "—"}</FieldRow>
           <FieldRow label="Category">{categoryObj?.name || product.category || "—"}</FieldRow>
-          <FieldRow label="Branch">{product.branchName || apiMeta.branch || branchName || "All / null"}</FieldRow>
+          <FieldRow label="Branch">{product.branchName || branchDisplayName(apiMeta.branch, "") || branchName || "All / null"}</FieldRow>
           <FieldRow label="Active">{isProductActive(product) ? "Yes" : "No"}</FieldRow>
           <FieldRow label="Featured">{product.isFeatured ? "Yes" : "No"}</FieldRow>
           <FieldRow label="Availability">{product.availabilityStatus || "—"}</FieldRow>
@@ -1071,6 +1106,53 @@ const ProductsPage = () => {
                         className={INPUT}
                       />
                     </label>
+                    <div className="sm:col-span-2 space-y-2 rounded-xl border border-[var(--admin-border,#292D35)] bg-[var(--admin-surface,#0F1217)]/80 p-3.5">
+                      <p className="text-xs font-bold text-[var(--admin-muted,#D4D4D4)]">Branch *</p>
+                      <label className="flex cursor-pointer items-center gap-2.5">
+                        <input
+                          type="checkbox"
+                          checked={formData.showAllBranches === true}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              showAllBranches: e.target.checked,
+                              branchName: e.target.checked
+                                ? ""
+                                : formData.branchName || branchName || liveBranches[0]?.name || ""
+                            })
+                          }
+                          className="rounded border-[var(--admin-border,#292D35)] text-[var(--color-admin-accent,#FF5A1F)]"
+                        />
+                        <span className="text-[12px] font-semibold text-[var(--admin-muted,#D4D4D4)]">
+                          Show this product in all branches
+                        </span>
+                      </label>
+                      <select
+                        disabled={formData.showAllBranches === true}
+                        value={formData.showAllBranches ? "" : formData.branchName || ""}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            showAllBranches: false,
+                            branchName: e.target.value
+                          })
+                        }
+                        className={`${INPUT} disabled:cursor-not-allowed disabled:opacity-50`}
+                      >
+                        <option value="">Select branch…</option>
+                        {liveBranches.map((b) => (
+                          <option key={b.id} value={b.name}>
+                            {b.name}
+                            {b.branchCode || b.shortName ? ` (${b.branchCode || b.shortName})` : ""}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="text-[11px] text-[var(--admin-faint,#737373)]">
+                        {formData.showAllBranches
+                          ? "Product will be available across every branch."
+                          : "Choose the branch where this product should appear."}
+                      </p>
+                    </div>
                     <div>
                       <p className="mb-2 text-xs font-bold text-[var(--admin-muted,#D4D4D4)]">Category *</p>
                       {categories.length === 0 ? (
@@ -1581,7 +1663,11 @@ const ProductsPage = () => {
             <MetaChip label="API count" value={apiMeta.count ?? stats.total} />
             <MetaChip
               label="Branch"
-              value={apiMeta.branch ?? ((isAllBranches ? "All" : branchName) || "null")}
+              value={
+                branchDisplayName(apiMeta.branch, "") ||
+                (isAllBranches ? "All" : branchName) ||
+                "null"
+              }
             />
             <MetaChip label="Domain" value={apiMeta.frontendDomainUrl || getFrontendDomainUrl()} />
             <MetaChip label="Success" value={apiMeta.success ? "true" : "false"} />

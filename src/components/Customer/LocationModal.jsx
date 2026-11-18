@@ -23,6 +23,10 @@ import {
   getPublicBranches,
   writeLocationSession
 } from '@/shared/lib/publicBranchesApi';
+import {
+  isGeolocationSecureContext,
+  requestCurrentPosition
+} from '@/shared/lib/geolocation';
 
 const ENGLISH_TILE_URL =
   "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}";
@@ -222,6 +226,7 @@ const LocationModal = ({
   const [coverage, setCoverage] = useState(null);
   const [showCartWarning, setShowCartWarning] = useState(false);
   const [pendingBranchId, setPendingBranchId] = useState(null);
+  const [gpsSecureContext, setGpsSecureContext] = useState(true);
 
   const branches = publicBranches.length ? publicBranches : fallbackBranches;
 
@@ -259,6 +264,7 @@ const LocationModal = ({
     setUserLat(currentSelection?.latitude || "");
     setUserLng(currentSelection?.longitude || "");
     setCoverage(null);
+    setGpsSecureContext(isGeolocationSecureContext());
   }, [isOpen, currentSelection]);
 
   const activeBranch = useMemo(
@@ -312,17 +318,24 @@ const LocationModal = ({
       const lngStr = String(lng);
       setUserLat(latStr);
       setUserLng(lngStr);
-      if (selectedBranchId) {
+      // Coverage check is for delivery only; pick-up just needs the pin.
+      if (orderMode === "delivery" && selectedBranchId) {
         await runCoverageCheck(selectedBranchId, latStr, lngStr);
+      } else {
+        setCoverage(
+          orderMode === "pickup"
+            ? { allowed: true, message: "Location set for pick-up.", ok: true }
+            : null
+        );
       }
     },
-    [selectedBranchId, runCoverageCheck]
+    [selectedBranchId, runCoverageCheck, orderMode]
   );
 
   const applyBranchChange = (branchId) => {
     setSelectedBranchId(branchId);
     setCoverage(null);
-    if (userLat && userLng) {
+    if (orderMode === "delivery" && userLat && userLng) {
       void runCoverageCheck(branchId, userLat, userLng);
     }
   };
@@ -345,31 +358,22 @@ const LocationModal = ({
     setPendingBranchId(null);
   };
 
-  const handleDetectLocation = () => {
-    if (!navigator.geolocation) {
-      setCoverage({
-        allowed: false,
-        message: "GPS is not available on this device.",
-        ok: false
-      });
-      return;
-    }
+  const handleDetectLocation = async () => {
     setIsLocating(true);
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        setIsLocating(false);
-        await applyUserLocation(pos.coords.latitude.toFixed(5), pos.coords.longitude.toFixed(5));
-      },
-      () => {
-        setIsLocating(false);
+    try {
+      const result = await requestCurrentPosition();
+      if (!result.ok) {
         setCoverage({
           allowed: false,
-          message: "Could not read your current location. Allow GPS or search manually.",
+          message: result.message,
           ok: false
         });
-      },
-      { enableHighAccuracy: true, timeout: 12000 }
-    );
+        return;
+      }
+      await applyUserLocation(result.latitude, result.longitude);
+    } finally {
+      setIsLocating(false);
+    }
   };
 
   const handleAddressSearch = async () => {
@@ -405,10 +409,13 @@ const LocationModal = ({
     }
   };
 
+  const hasCustomerLocation = Boolean(userLat && userLng);
+  // Delivery + Pick-up both require customer pin (GPS / search / map).
+  // Delivery also requires in-coverage; pick-up only needs a valid location pin.
   const canConfirm =
     Boolean(selectedBranchId) &&
-    (orderMode === "pickup" ||
-      (coverage?.allowed === true && userLat && userLng));
+    hasCustomerLocation &&
+    (orderMode === "pickup" || coverage?.allowed === true);
 
   const handleConfirm = () => {
     if (!canConfirm || !activeBranch) return;
@@ -506,7 +513,9 @@ const LocationModal = ({
                 Choose branch & your location
               </h2>
               <p className="mt-0.5 text-xs text-[#777777] sm:text-sm">
-                Pick a branch, set your pin on the map, then we check if we deliver there.
+                {orderMode === "pickup"
+                  ? "Select a branch and set your current location — required even for pick-up."
+                  : "Select a branch, then set your location so we can check delivery coverage."}
               </p>
             </div>
           </div>
@@ -530,7 +539,13 @@ const LocationModal = ({
             <div className="grid grid-cols-2 gap-2 rounded-2xl border border-[#EEE7DC] bg-[#FAF6F0] p-1.5">
               <button
                 type="button"
-                onClick={() => setOrderMode("delivery")}
+                onClick={() => {
+                  setOrderMode("delivery");
+                  setCoverage(null);
+                  if (userLat && userLng && selectedBranchId) {
+                    void runCoverageCheck(selectedBranchId, userLat, userLng);
+                  }
+                }}
                 className={`flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-xs font-black transition-all sm:text-sm ${
                   orderMode === "delivery"
                     ? "bg-[#E51B23] text-white shadow-md"
@@ -542,7 +557,14 @@ const LocationModal = ({
               </button>
               <button
                 type="button"
-                onClick={() => setOrderMode("pickup")}
+                onClick={() => {
+                  setOrderMode("pickup");
+                  setCoverage(
+                    userLat && userLng
+                      ? { allowed: true, message: "Location set for pick-up.", ok: true }
+                      : null
+                  );
+                }}
                 className={`flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-xs font-black transition-all sm:text-sm ${
                   orderMode === "pickup"
                     ? "bg-[#191919] text-white shadow-md"
@@ -653,15 +675,17 @@ const LocationModal = ({
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p className="text-xs font-black uppercase tracking-wider text-neutral-800">
-                    Your location for {activeBranch.name}
+                    {orderMode === "pickup" ? "Your location (required for pick-up)" : "Delivery location (required)"}
                   </p>
                   <p className="mt-0.5 text-[11px] text-[#777]">
-                    Search an address, use GPS, or tap the map to drop your pin.
+                    {orderMode === "pickup"
+                      ? "Tell us where you are now — use GPS, search, or tap the map."
+                      : "Use GPS, search an address, or tap the map — location is required for delivery."}
                   </p>
                 </div>
                 <button
                   type="button"
-                  onClick={handleDetectLocation}
+                  onClick={() => void handleDetectLocation()}
                   disabled={isLocating}
                   className="inline-flex items-center justify-center gap-2 rounded-xl border border-[#E9E2D8] bg-white px-3 py-2 text-xs font-bold text-[#191919] disabled:opacity-50"
                 >
@@ -673,6 +697,17 @@ const LocationModal = ({
                   Use my GPS
                 </button>
               </div>
+
+              {!gpsSecureContext ? (
+                <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-[11px] font-semibold text-amber-900">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span>
+                    This page is on HTTP, so phone GPS may be blocked. Use{" "}
+                    <code className="rounded bg-white px-1">npm run dev:https</code> and open the
+                    HTTPS URL, or tap the map / search to set your pin.
+                  </span>
+                </div>
+              ) : null}
 
               <div className="flex flex-col gap-2 sm:flex-row">
                 <div className="relative flex-1">
@@ -718,6 +753,17 @@ const LocationModal = ({
                 longitude={userLng}
                 onPick={(point) => void applyUserLocation(point.latitude, point.longitude)}
               />
+
+              {!hasCustomerLocation && !isChecking ? (
+                <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs font-semibold text-amber-900">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span>
+                    {orderMode === "pickup"
+                      ? "Set your current location to continue with pick-up."
+                      : "Set your current or delivery location to continue."}
+                  </span>
+                </div>
+              ) : null}
 
               {isChecking ? (
                 <div className="flex items-center gap-2 rounded-xl border border-[#E9E2D8] bg-white px-3 py-2.5 text-xs font-semibold text-neutral-600">

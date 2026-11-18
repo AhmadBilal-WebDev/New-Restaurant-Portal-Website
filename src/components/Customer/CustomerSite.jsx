@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useRestaurant } from '@/contexts/RestaurantContext';
 import { Header } from '@/components/Customer/Header';
 import { Hero } from '@/components/Customer/Hero';
@@ -10,6 +10,7 @@ import { ProductDetailModal } from '@/components/Customer/ProductDetailModal';
 import { CartDrawer } from '@/components/Customer/CartDrawer';
 import { CheckoutModal } from '@/components/Customer/CheckoutModal';
 import { DealsSection } from '@/components/Customer/DealsSection';
+import { DealsWelcomeModal } from '@/components/Customer/DealsWelcomeModal';
 import { BrandStory } from '@/components/Customer/BrandStory';
 import { HowItWorks } from '@/components/Customer/HowItWorks';
 import { Testimonials } from '@/components/Customer/Testimonials';
@@ -26,11 +27,35 @@ import {
   readLocationSession,
   writeLocationSession
 } from '@/shared/lib/publicBranchesApi';
+import {
+  getUserCatalogCategories,
+  getUserCatalogProducts,
+  userCatalogApiMessage
+} from '@/shared/lib/userCatalogApi';
+import { getPublicFrontendDomainUrl } from '@/shared/lib/catalogApi';
+import {
+  clearGuestCart,
+  clearGuestOrderStorage,
+  clearPendingCheckout,
+  hasPendingCheckout,
+  readGuestCart,
+  writeGuestCart
+} from '@/shared/lib/guestCartStorage';
+import {
+  addUserCartItem,
+  adjustUserCartItemQuantity,
+  buildAddCartItemPayload,
+  buildCartSyncPayload,
+  clearUserCart,
+  getUserCart,
+  removeUserCartItem,
+  syncUserCart
+} from '@/shared/lib/userCartApi';
 import { ArrowUp, Shield } from "lucide-react";
 const CustomerSite = ({ onOpenAdmin }) => {
   const {
     config,
-    products,
+    products: contextProducts,
     branches,
     orders,
     currentUser,
@@ -41,6 +66,15 @@ const CustomerSite = ({ onOpenAdmin }) => {
   } = useRestaurant();
   const [isClientReady, setIsClientReady] = useState(false);
   const [cartItems, setCartItems] = useState([]);
+  const [cartHydrated, setCartHydrated] = useState(false);
+  const [authIntent, setAuthIntent] = useState("register");
+  const [resumeCheckoutAfterAuth, setResumeCheckoutAfterAuth] = useState(false);
+  const [isCartSyncing, setIsCartSyncing] = useState(false);
+  const [isCartMutating, setIsCartMutating] = useState(false);
+  const cartSyncInFlightRef = useRef(false);
+  const cartSyncedForUserRef = useRef("");
+  const cartMutatingRef = useRef(false);
+  const prevCustomerUserRef = useRef(customerUser);
   const [branchSelection, setBranchSelection] = useState({
     branchId: "",
     selectedArea: "",
@@ -49,7 +83,12 @@ const CustomerSite = ({ onOpenAdmin }) => {
     longitude: ""
   });
   const [isLocationModalOpen, setIsLocationModalOpen] = useState(false);
+  const [isDealsWelcomeOpen, setIsDealsWelcomeOpen] = useState(false);
   const [isFirstVisit, setIsFirstVisit] = useState(false);
+  const [storefrontCategories, setStorefrontCategories] = useState([]);
+  const [storefrontProductsRaw, setStorefrontProductsRaw] = useState([]);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogLoaded, setCatalogLoaded] = useState(false);
   useEffect(() => {
     try {
       const saved = readLocationSession();
@@ -59,25 +98,68 @@ const CustomerSite = ({ onOpenAdmin }) => {
           selectedArea: saved.selectedArea || saved.branchName || "",
           orderMode: saved.orderMode,
           latitude: saved.latitude || "",
-          longitude: saved.longitude || ""
+          longitude: saved.longitude || "",
+          branchName: saved.branchName || ""
         });
+      }
+      // Always restore cart mirror from localStorage (guest + post-logout continuity).
+      setCartItems(readGuestCart());
+      if (hasPendingCheckout()) {
+        setResumeCheckoutAfterAuth(true);
       }
     } catch (error) {
       console.error("Saved branch selection could not be restored:", error);
     } finally {
+      setCartHydrated(true);
       setIsClientReady(true);
       // Show location modal on every page refresh / load.
       setIsLocationModalOpen(true);
       setIsFirstVisit(true);
     }
   }, []);
-  const storefrontProducts = products.filter((product) => {
-    const isTaggedOutOfStock = product.tags?.some((tag) => {
-      const normalizedTag = tag.trim().toLowerCase().replace(/[\s-]+/g, "_");
-      return normalizedTag === "outofstock" || normalizedTag === "out_of_stock";
+
+  /** Items that still need /cart/sync (new guest lines or edited after logout). */
+  const getPendingSyncItems = (items = []) =>
+    (Array.isArray(items) ? items : []).filter(
+      (item) => !item?.serverCartSynced || item?.guestDirty === true
+    );
+
+  // Always mirror cart → localStorage so logout/guest still sees selections.
+  useEffect(() => {
+    if (!cartHydrated) return;
+    writeGuestCart(Array.isArray(cartItems) ? cartItems : []);
+  }, [cartItems, cartHydrated]);
+
+  // On logout: keep LS cart for guest editing; only reset sync gate.
+  useEffect(() => {
+    const wasLoggedIn = !!prevCustomerUserRef.current;
+    const isLoggedIn = !!customerUser;
+    prevCustomerUserRef.current = customerUser;
+    if (!wasLoggedIn || isLoggedIn) return;
+    cartSyncedForUserRef.current = "";
+    setCartItems((prev) => {
+      const next = (Array.isArray(prev) ? prev : []).map((item) => ({
+        ...item,
+        // Keep as mirrored until guest edits; prevents blind re-merge on next login.
+        serverCartSynced: item.serverCartSynced !== false,
+        guestDirty: false
+      }));
+      writeGuestCart(next);
+      return next;
     });
-    return product.inStock !== false && !isTaggedOutOfStock;
-  });
+  }, [customerUser]);
+  const storefrontProducts = useMemo(
+    () =>
+      storefrontProductsRaw.filter((product) => {
+        const isTaggedOutOfStock = product.tags?.some((tag) => {
+          const key = typeof tag === "string" ? tag : tag?.key || "";
+          const normalizedTag = String(key).trim().toLowerCase().replace(/[\s-]+/g, "_");
+          return normalizedTag === "outofstock" || normalizedTag === "out_of_stock";
+        });
+        return product.inStock !== false && !isTaggedOutOfStock;
+      }),
+    [storefrontProductsRaw]
+  );
   const [selectedCategory, setSelectedCategory] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [favorites, setFavorites] = useState(["classic-smash-meal", "loaded-bbq-burger"]);
@@ -99,7 +181,162 @@ const CustomerSite = ({ onOpenAdmin }) => {
   const [latestOrder, setLatestOrder] = useState(null);
   const [activeSection, setActiveSection] = useState("hero-section");
   const [showScrollTop, setShowScrollTop] = useState(false);
-  const currentBranch = branches.find((b) => b.id === branchSelection.branchId) || branches[0];
+  const addToastRef = useRef(addToast);
+  addToastRef.current = addToast;
+  const catalogRequestKeyRef = useRef("");
+
+  const locationConfirmed = Boolean(
+    branchSelection.branchId &&
+      (branchSelection.branchName || branchSelection.selectedArea)
+  );
+
+  const currentBranch =
+    branches.find((b) => b.id === branchSelection.branchId) ||
+    (locationConfirmed ? branches[0] : null);
+
+  const catalogBranchCandidates = useMemo(() => {
+    if (!locationConfirmed) return [];
+    const confirmed =
+      branches.find((b) => b.id === branchSelection.branchId) || null;
+    const values = [
+      branchSelection.branchName,
+      confirmed?.name,
+      confirmed?.city,
+      confirmed?.shortName,
+      confirmed?.branchCode,
+      branchSelection.selectedArea
+    ];
+    const unique = [];
+    for (const value of values) {
+      const trimmed = typeof value === "string" ? value.trim() : "";
+      if (!trimmed) continue;
+      if (!unique.some((entry) => entry.toLowerCase() === trimmed.toLowerCase())) {
+        unique.push(trimmed);
+      }
+    }
+    return unique;
+  }, [
+    locationConfirmed,
+    branchSelection.branchId,
+    branchSelection.branchName,
+    branchSelection.selectedArea,
+    branches
+  ]);
+
+  useEffect(() => {
+    if (!isClientReady || catalogBranchCandidates.length === 0) {
+      setStorefrontCategories([]);
+      setStorefrontProductsRaw([]);
+      setCatalogLoaded(false);
+      setCatalogLoading(false);
+      return;
+    }
+
+    const requestKey = catalogBranchCandidates.join("|");
+    catalogRequestKeyRef.current = requestKey;
+
+    let cancelled = false;
+    setCatalogLoading(true);
+    setCatalogLoaded(false);
+    setSelectedCategory("all");
+
+    void (async () => {
+      const domain = getPublicFrontendDomainUrl();
+      let lastCatsError = "";
+      let lastProdsError = "";
+      let loaded = false;
+
+      for (const candidate of catalogBranchCandidates) {
+        if (cancelled || catalogRequestKeyRef.current !== requestKey) return;
+
+        const [cats, prods] = await Promise.all([
+          getUserCatalogCategories({
+            frontendDomainUrl: domain,
+            branchName: candidate
+          }),
+          getUserCatalogProducts({
+            frontendDomainUrl: domain,
+            branchName: candidate
+          })
+        ]);
+
+        if (cancelled || catalogRequestKeyRef.current !== requestKey) return;
+
+        const catsMessage = userCatalogApiMessage(
+          cats.data,
+          "Could not load menu categories."
+        );
+        const prodsMessage = userCatalogApiMessage(
+          prods.data,
+          "Could not load menu products."
+        );
+        const catsBranchMissing =
+          !cats.ok && /branch name not found/i.test(catsMessage || "");
+        const prodsBranchMissing =
+          !prods.ok && /branch name not found/i.test(prodsMessage || "");
+
+        if (catsBranchMissing || prodsBranchMissing) {
+          lastCatsError = catsMessage;
+          lastProdsError = prodsMessage;
+          continue;
+        }
+
+        if (!cats.ok) {
+          setStorefrontCategories([]);
+          lastCatsError = catsMessage;
+        } else {
+          setStorefrontCategories(cats.categories);
+        }
+
+        if (!prods.ok) {
+          setStorefrontProductsRaw([]);
+          lastProdsError = prodsMessage;
+        } else {
+          const categoryNameById = Object.fromEntries(
+            (cats.ok ? cats.categories : []).map((category) => [category.id, category.name])
+          );
+          setStorefrontProductsRaw(
+            prods.products.map((product) => ({
+              ...product,
+              categoryName: product.categoryName || categoryNameById[product.category] || ""
+            }))
+          );
+        }
+
+        if (!cats.ok) {
+          addToastRef.current("Categories unavailable", catsMessage, "error");
+        }
+        if (!prods.ok) {
+          addToastRef.current("Products unavailable", prodsMessage, "error");
+        }
+
+        loaded = true;
+        break;
+      }
+
+      if (cancelled || catalogRequestKeyRef.current !== requestKey) return;
+
+      if (!loaded) {
+        setStorefrontCategories([]);
+        setStorefrontProductsRaw([]);
+        // Only one quiet failure toast pair after all candidates fail.
+        if (lastCatsError) {
+          addToastRef.current("Categories unavailable", lastCatsError, "error");
+        }
+        if (lastProdsError) {
+          addToastRef.current("Products unavailable", lastProdsError, "error");
+        }
+      }
+
+      setCatalogLoading(false);
+      setCatalogLoaded(true);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isClientReady, catalogBranchCandidates]);
+
   useEffect(() => {
     if (latestOrder) {
       const match = orders.find(
@@ -124,12 +361,14 @@ const CustomerSite = ({ onOpenAdmin }) => {
       orderMode: selection.orderMode || "delivery",
       latitude: selection.latitude || "",
       longitude: selection.longitude || "",
-      branchName: selection.branchName || ""
+      branchName: selection.branchName || selection.selectedArea || ""
     };
     setBranchSelection(next);
     writeLocationSession(next);
     setIsFirstVisit(false);
     setIsLocationModalOpen(false);
+    // After location is locked, show branch deals in a welcome modal.
+    setIsDealsWelcomeOpen(true);
     addToast(
       "Location confirmed",
       `${next.branchName || next.selectedArea || "Branch"} · ${
@@ -166,12 +405,156 @@ const CustomerSite = ({ onOpenAdmin }) => {
     window.addEventListener("scroll", handleScroll, { passive: true });
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
-  const handleAddToCart = (product, quantity, selectedBun, selectedCheese, selectedAddons = [], specialInstructions, calculatedTotal) => {
+  const getActiveBranchMeta = () => {
+    const branchId = branchSelection.branchId || currentBranch?.id || "";
+    const branchName =
+      branchSelection.branchName ||
+      currentBranch?.name ||
+      currentBranch?.city ||
+      currentBranch?.shortName ||
+      "";
+    return { branchId, branchName };
+  };
+
+  const applyServerCartItems = (items) => {
+    const next = (Array.isArray(items) ? items : []).map((item) => ({
+      ...item,
+      serverCartSynced: true,
+      guestDirty: false
+    }));
+    setCartItems(next);
+    // Mirror server cart in localStorage (do NOT wipe) so logout still shows cart.
+    writeGuestCart(next);
+  };
+
+  const loadAccountCart = async ({ showToast = false } = {}) => {
+    const result = await getUserCart(getPublicFrontendDomainUrl());
+    if (result.ok) {
+      applyServerCartItems(result.items);
+      if (showToast) {
+        addToast("Cart loaded", result.message || "Loaded your account cart.", "success");
+      }
+    }
+    return result;
+  };
+
+  const handleClearCart = async ({ silent = false } = {}) => {
+    // Guest / logged-out → localStorage only
+    if (!customerUser) {
+      setCartItems([]);
+      clearGuestCart();
+      if (!silent) addToast("Cart cleared", "All items removed.", "success");
+      return;
+    }
+    // Logged-in → DELETE /api/restaurant/user/cart (Bearer token)
+    if (cartMutatingRef.current) return;
+    cartMutatingRef.current = true;
+    setIsCartMutating(true);
+    try {
+      const result = await clearUserCart(getPublicFrontendDomainUrl());
+      if (result.ok) {
+        setCartItems([]);
+        writeGuestCart([]);
+        if (!silent) addToast("Cart cleared", "All items removed from your cart.", "success");
+      } else {
+        addToast("Could not clear cart", result.message || "Please try again.", "error");
+      }
+    } finally {
+      cartMutatingRef.current = false;
+      setIsCartMutating(false);
+    }
+  };
+
+  const handleAddToCart = async (
+    product,
+    quantity,
+    selectedBun,
+    selectedCheese,
+    selectedAddons = [],
+    specialInstructions,
+    calculatedTotal
+  ) => {
     const addonKey = selectedAddons.map((a) => a.id).sort().join("-");
     const cartItemId = `${product.id}-${selectedBun || "nobun"}-${selectedCheese || "nocheese"}-${addonKey}-${specialInstructions || "none"}`;
-    const addonsPrice = selectedAddons.reduce((sum, a) => sum + a.price, 0);
-    const unitPrice = product.price + addonsPrice;
-    const finalItemTotal = calculatedTotal || unitPrice * quantity;
+    const addonsPrice = selectedAddons.reduce(
+      (sum, a) => sum + (Number(a.price) || 0) * Math.max(1, Number(a.quantity) || 1),
+      0
+    );
+    const selectedVariant = product?.selectedVariant || null;
+    const matchedVariant =
+      selectedVariant ||
+      (selectedBun && Array.isArray(product?.variants)
+        ? product.variants.find(
+            (v) => String(v?.name || "").toLowerCase() === String(selectedBun).toLowerCase()
+          )
+        : null) ||
+      product?.variants?.[0] ||
+      null;
+    const basePrice =
+      (typeof selectedVariant?.price === "number" && selectedVariant.price > 0
+        ? selectedVariant.price
+        : null) ??
+      (typeof matchedVariant?.price === "number" && matchedVariant.price > 0
+        ? matchedVariant.price
+        : null) ??
+      (Number(product?.price) > 0 ? Number(product.price) : null) ??
+      (Number(product?.sellingPrice) > 0 ? Number(product.sellingPrice) : 0);
+    const unitPrice = Number(basePrice) + addonsPrice;
+    const finalItemTotal =
+      typeof calculatedTotal === "number" && calculatedTotal > 0
+        ? calculatedTotal
+        : unitPrice * quantity;
+    const variantId =
+      selectedVariant?.id ||
+      matchedVariant?.id ||
+      product?.variantId ||
+      undefined;
+
+    // Logged-in: persist via cart items API, then hydrate from server cart.
+    if (customerUser) {
+      const { branchId, branchName } = getActiveBranchMeta();
+      if (!branchId) {
+        addToast("Branch required", "Select a delivery branch before adding items.", "error");
+        return;
+      }
+      if (cartMutatingRef.current) return;
+      cartMutatingRef.current = true;
+      setIsCartMutating(true);
+      try {
+        const payload = buildAddCartItemPayload({
+          product: {
+            ...product,
+            price: basePrice,
+            selectedVariant: selectedVariant || matchedVariant || product.selectedVariant,
+            variantId
+          },
+          quantity,
+          selectedBun: selectedBun || matchedVariant?.name,
+          selectedAddons,
+          specialInstructions,
+          branchId,
+          branchName
+        });
+        const result = await addUserCartItem(payload, getPublicFrontendDomainUrl());
+        if (!result.ok) {
+          addToast("Add to cart failed", result.message || "Could not add item.", "error");
+          return;
+        }
+        applyServerCartItems(result.items);
+        addToast(
+          "Added to Order!",
+          `${quantity}x ${product.name}`,
+          "success"
+        );
+        setIsCartOpen(true);
+      } finally {
+        cartMutatingRef.current = false;
+        setIsCartMutating(false);
+      }
+      return;
+    }
+
+    // Guest: localStorage-backed cart (pending sync on next login).
     setCartItems((prev) => {
       const existingIndex = prev.findIndex((item) => item.cartItemId === cartItemId);
       if (existingIndex > -1) {
@@ -181,25 +564,34 @@ const CustomerSite = ({ onOpenAdmin }) => {
         updated[existingIndex] = {
           ...current,
           quantity: newQty,
-          totalPrice: current.unitPrice * newQty
+          totalPrice: current.unitPrice * newQty,
+          serverCartSynced: false,
+          guestDirty: true
         };
         return updated;
-      } else {
-        return [
-          ...prev,
-          {
-            cartItemId,
-            product,
-            quantity,
-            selectedBun,
-            selectedCheese,
-            selectedAddons,
-            specialInstructions,
-            unitPrice,
-            totalPrice: finalItemTotal
-          }
-        ];
       }
+      return [
+        ...prev,
+        {
+          cartItemId,
+          product: {
+            ...product,
+            price: basePrice,
+            sellingPrice: basePrice,
+            selectedVariant: selectedVariant || matchedVariant || null
+          },
+          quantity,
+          selectedBun: selectedBun || matchedVariant?.name || "",
+          selectedCheese,
+          selectedAddons,
+          specialInstructions,
+          unitPrice,
+          totalPrice: finalItemTotal,
+          variantId,
+          serverCartSynced: false,
+          guestDirty: true
+        }
+      ];
     });
     addToast(
       "Added to Order!",
@@ -210,25 +602,99 @@ const CustomerSite = ({ onOpenAdmin }) => {
   };
   const handleQuickAdd = (product, e) => {
     e.stopPropagation();
-    handleAddToCart(product, 1);
+    void handleAddToCart(product, 1);
   };
-  const handleUpdateQuantity = (cartItemId, newQuantity) => {
-    if (newQuantity <= 0) {
-      handleRemoveItem(cartItemId);
+  const handleUpdateQuantity = async (cartItemId, actionOrQuantity) => {
+    const line = cartItems.find(
+      (item) => item.cartItemId === cartItemId || item.serverLineId === cartItemId
+    );
+    if (!line) return;
+
+    const currentQty = Math.max(1, Number(line.quantity) || 1);
+    let action = "";
+    if (actionOrQuantity === "increase" || actionOrQuantity === "decrease") {
+      action = actionOrQuantity;
+    } else {
+      const nextQty = Number(actionOrQuantity);
+      if (!Number.isFinite(nextQty)) return;
+      if (nextQty > currentQty) action = "increase";
+      else if (nextQty < currentQty) action = "decrease";
+      else return;
+    }
+
+    // Guest / logged-out: localStorage only; mark dirty so next login reconciles.
+    if (!customerUser) {
+      if (action === "decrease" && currentQty <= 1) {
+        setCartItems((prev) => prev.filter((item) => item.cartItemId !== cartItemId));
+        return;
+      }
+      const nextQty = action === "increase" ? currentQty + 1 : currentQty - 1;
+      setCartItems((prev) =>
+        prev.map((item) =>
+          item.cartItemId === cartItemId
+            ? {
+                ...item,
+                quantity: nextQty,
+                totalPrice: item.unitPrice * nextQty,
+                serverCartSynced: false,
+                guestDirty: true
+              }
+            : item
+        )
+      );
       return;
     }
-    setCartItems(
-      (prev) => prev.map(
-        (item) => item.cartItemId === cartItemId ? {
-          ...item,
-          quantity: newQuantity,
-          totalPrice: item.unitPrice * newQuantity
-        } : item
-      )
-    );
+
+    // Logged-in: qty=1 + decrease → remove line; otherwise action API.
+    if (action === "decrease" && currentQty <= 1) {
+      void handleRemoveItem(cartItemId);
+      return;
+    }
+
+    const serverId = line.serverLineId || line.cartItemId || cartItemId;
+    if (cartMutatingRef.current) return;
+    cartMutatingRef.current = true;
+    setIsCartMutating(true);
+    try {
+      const result = await adjustUserCartItemQuantity(
+        serverId,
+        action,
+        getPublicFrontendDomainUrl()
+      );
+      if (!result.ok) {
+        addToast("Update failed", result.message || "Could not update quantity.", "error");
+        return;
+      }
+      applyServerCartItems(result.items);
+    } finally {
+      cartMutatingRef.current = false;
+      setIsCartMutating(false);
+    }
   };
-  const handleRemoveItem = (cartItemId) => {
-    setCartItems((prev) => prev.filter((item) => item.cartItemId !== cartItemId));
+  const handleRemoveItem = async (cartItemId) => {
+    if (!customerUser) {
+      setCartItems((prev) => prev.filter((item) => item.cartItemId !== cartItemId));
+      return;
+    }
+
+    const line = cartItems.find(
+      (item) => item.cartItemId === cartItemId || item.serverLineId === cartItemId
+    );
+    const serverId = line?.serverLineId || line?.cartItemId || cartItemId;
+    if (cartMutatingRef.current) return;
+    cartMutatingRef.current = true;
+    setIsCartMutating(true);
+    try {
+      const result = await removeUserCartItem(serverId, getPublicFrontendDomainUrl());
+      if (!result.ok) {
+        addToast("Remove failed", result.message || "Could not remove item.", "error");
+        return;
+      }
+      applyServerCartItems(result.items);
+    } finally {
+      cartMutatingRef.current = false;
+      setIsCartMutating(false);
+    }
   };
   const handleClaimDeal = (deal) => {
     const dealProduct = {
@@ -242,7 +708,7 @@ const CustomerSite = ({ onOpenAdmin }) => {
       description: deal.shortDescription,
       image: deal.image
     };
-    handleAddToCart(dealProduct, 1);
+    void handleAddToCart(dealProduct, 1);
     addToast("Deal Combo Claimed!", `${deal.name} added (${formatPrice(deal.dealPrice)})`, "success");
   };
   const handleToggleFavorite = (productId, e) => {
@@ -250,7 +716,9 @@ const CustomerSite = ({ onOpenAdmin }) => {
     setFavorites((prev) => {
       const exists = prev.includes(productId);
       const updated = exists ? prev.filter((id) => id !== productId) : [...prev, productId];
-      const product = products.find((p) => p.id === productId);
+      const product =
+        storefrontProductsRaw.find((p) => p.id === productId) ||
+        contextProducts.find((p) => p.id === productId);
       addToast(
         exists ? "Removed from Favorites" : "Saved to Favorites!",
         product ? product.name : "",
@@ -264,7 +732,7 @@ const CustomerSite = ({ onOpenAdmin }) => {
     placeCustomerOrder({
       items: order.items,
       customerName: order.customerName,
-      phone: "(555) 384-9182",
+      phone: order.customerPhone || customerUser?.phone || "",
       address: order.deliveryAddress || "Local Address",
       branchId: currentBranch?.id || "branch-renala",
       paymentMethod: "card",
@@ -275,7 +743,185 @@ const CustomerSite = ({ onOpenAdmin }) => {
       total: order.total,
       notes: "Customer placed order via website storefront."
     });
+    clearGuestOrderStorage();
+    setResumeCheckoutAfterAuth(false);
   };
+
+  const handleRequireLoginForCheckout = () => {
+    setResumeCheckoutAfterAuth(true);
+    setAuthIntent("login");
+    setIsCheckoutOpen(false);
+    setIsCartOpen(false);
+    setIsAuthModalOpen(true);
+  };
+
+  /**
+   * Login reconcile:
+   * - Keep localStorage as cart mirror (never wipe after sync)
+   * - Clean mirrored lines → GET only (no re-merge / no qty double)
+   * - Dirty lines with serverLineId → increase/decrease to match local qty
+   * - Brand-new guest lines → /cart/sync once
+   * - Guest-removed mirrored lines → DELETE item on server
+   */
+  const syncLocalCartWithServer = async ({
+    items = null,
+    showToast = true
+  } = {}) => {
+    const branchId = branchSelection.branchId || currentBranch?.id || "";
+    const branchName =
+      branchSelection.branchName ||
+      currentBranch?.name ||
+      currentBranch?.city ||
+      currentBranch?.shortName ||
+      "";
+
+    if (!branchId) {
+      return { ok: false, skipped: true, message: "Branch required before cart sync." };
+    }
+    if (cartSyncInFlightRef.current) {
+      return { ok: false, skipped: true, message: "Cart sync already running." };
+    }
+
+    cartSyncInFlightRef.current = true;
+    setIsCartSyncing(true);
+    const domain = getPublicFrontendDomainUrl();
+
+    try {
+      const fromStorage = readGuestCart();
+      const localAll = Array.isArray(items)
+        ? items
+        : fromStorage.length
+          ? fromStorage
+          : Array.isArray(cartItems)
+            ? cartItems
+            : [];
+      const pending = getPendingSyncItems(localAll);
+
+      let serverResult = await getUserCart(domain);
+      let serverItems = serverResult.ok ? serverResult.items : [];
+
+      // Guest cleared everything → clear account cart too.
+      if (!localAll.length) {
+        if (serverItems.length) {
+          await clearUserCart(domain);
+        }
+        applyServerCartItems([]);
+        return { ok: true, cleared: true };
+      }
+
+      // Guest removed mirrored lines → delete those server rows.
+      const hasMirrorIds = localAll.some((item) => item.serverLineId);
+      if (hasMirrorIds) {
+        for (const serverLine of serverItems) {
+          const sid = serverLine.serverLineId || serverLine.cartItemId;
+          const stillLocal = localAll.some(
+            (local) => local.serverLineId === sid || local.cartItemId === sid
+          );
+          if (!stillLocal && sid) {
+            await removeUserCartItem(sid, domain);
+          }
+        }
+        serverResult = await getUserCart(domain);
+        serverItems = serverResult.ok ? serverResult.items : [];
+      }
+
+      // Dirty mirrored qty → adjust via increase/decrease (avoids sync double-count).
+      const dirtyMirrored = pending.filter((item) => item.serverLineId);
+      for (const item of dirtyMirrored) {
+        const sid = item.serverLineId;
+        const serverLine = serverItems.find(
+          (row) => row.serverLineId === sid || row.cartItemId === sid
+        );
+        if (!serverLine) continue;
+        const localQty = Math.max(1, Number(item.quantity) || 1);
+        const serverQty = Math.max(1, Number(serverLine.quantity) || 1);
+        let delta = localQty - serverQty;
+        while (delta > 0) {
+          const bumped = await adjustUserCartItemQuantity(sid, "increase", domain);
+          if (!bumped.ok) break;
+          delta -= 1;
+        }
+        while (delta < 0) {
+          const reduced = await adjustUserCartItemQuantity(sid, "decrease", domain);
+          if (!reduced.ok) break;
+          delta += 1;
+        }
+      }
+
+      // Brand-new guest lines (never on server) → sync merge once.
+      const brandNew = pending.filter((item) => !item.serverLineId);
+      if (brandNew.length) {
+        const payload = buildCartSyncPayload({
+          cartItems: brandNew,
+          branchId,
+          branchName
+        });
+        const syncResult = await syncUserCart(payload, domain);
+        if (!syncResult.ok && showToast) {
+          addToast(
+            "Cart sync failed",
+            syncResult.message || "Could not merge local cart.",
+            "error"
+          );
+        }
+      }
+
+      const loaded = await loadAccountCart({ showToast: false });
+      if (showToast && pending.length) {
+        addToast(
+          "Cart synced",
+          "Local cart synced with your account.",
+          "success"
+        );
+      }
+      return { ok: loaded.ok !== false, reconciled: true, pendingCount: pending.length };
+    } finally {
+      cartSyncInFlightRef.current = false;
+      setIsCartSyncing(false);
+    }
+  };
+
+  const handleAuthSuccess = async () => {
+    setIsAuthModalOpen(false);
+
+    const fromStorage = readGuestCart();
+    const localSnapshot = fromStorage.length ? fromStorage : cartItems;
+
+    cartSyncedForUserRef.current = "auth-success";
+    await syncLocalCartWithServer({
+      items: localSnapshot,
+      showToast: getPendingSyncItems(localSnapshot).length > 0
+    });
+    if (customerUser?.id) {
+      cartSyncedForUserRef.current = customerUser.id;
+    }
+
+    if (resumeCheckoutAfterAuth || hasPendingCheckout()) {
+      clearPendingCheckout();
+      setResumeCheckoutAfterAuth(false);
+      setIsCheckoutOpen(true);
+      addToast(
+        "Welcome back",
+        "You're signed in. Review checkout and place your order.",
+        "success"
+      );
+      return;
+    }
+    scrollToSection("hero-section");
+  };
+
+  // Logged-in refresh: reconcile LS mirror once location is confirmed.
+  useEffect(() => {
+    if (!cartHydrated || !isClientReady || !customerUser?.id || !locationConfirmed) return;
+    if (cartSyncedForUserRef.current === customerUser.id) return;
+    cartSyncedForUserRef.current = customerUser.id;
+    const localSnapshot = readGuestCart().length ? readGuestCart() : cartItems;
+    void syncLocalCartWithServer({
+      items: localSnapshot,
+      showToast: getPendingSyncItems(localSnapshot).length > 0
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cartHydrated, isClientReady, customerUser?.id, locationConfirmed]);
   const scrollToSection = (sectionId) => {
     const el = document.getElementById(sectionId);
     if (el) {
@@ -337,6 +983,7 @@ const CustomerSite = ({ onOpenAdmin }) => {
       if (customerUser) {
         openAccountSection("orders");
       } else {
+        setAuthIntent("login");
         setIsAuthModalOpen(true);
       }
     }}
@@ -349,6 +996,7 @@ const CustomerSite = ({ onOpenAdmin }) => {
       if (customerUser) {
         setIsUserMenuOpen(true);
       } else {
+        setAuthIntent("register");
         setIsAuthModalOpen(true);
       }
     }}
@@ -378,7 +1026,8 @@ const CustomerSite = ({ onOpenAdmin }) => {
   }
         <MenuSection
     products={storefrontProducts}
-    catalogReady={isClientReady}
+    categories={storefrontCategories}
+    catalogReady={isClientReady && catalogLoaded && !catalogLoading}
     selectedCategory={selectedCategory}
     onSelectCategory={setSelectedCategory}
     searchQuery={searchQuery}
@@ -394,7 +1043,7 @@ const CustomerSite = ({ onOpenAdmin }) => {
   }
         <PopularMeals
     products={storefrontProducts}
-    catalogReady={isClientReady}
+    catalogReady={isClientReady && catalogLoaded && !catalogLoading}
     onSelectProduct={(p) => setSelectedProductForModal(p)}
     onQuickAdd={handleQuickAdd}
     favorites={favorites}
@@ -406,14 +1055,18 @@ const CustomerSite = ({ onOpenAdmin }) => {
     /* 4. Sizzling Deals / Combos */
   }
         <DealsSection
-    branch={isClientReady ? currentBranch : null}
+    branch={isClientReady && locationConfirmed ? currentBranch : null}
     branchName={
       process.env.NEXT_PUBLIC_RESTAURANT_BRANCH_NAME ||
-      (isClientReady
-        ? currentBranch?.name || currentBranch?.city || currentBranch?.shortName || ""
+      (isClientReady && locationConfirmed
+        ? branchSelection.branchName ||
+          currentBranch?.name ||
+          currentBranch?.city ||
+          currentBranch?.shortName ||
+          ""
         : "")
     }
-    enabled={isClientReady}
+    enabled={isClientReady && locationConfirmed}
     onClaimDeal={handleClaimDeal}
   />
 
@@ -481,7 +1134,24 @@ const CustomerSite = ({ onOpenAdmin }) => {
         onSelectBranch={handleSelectBranch}
         isFirstVisit={isFirstVisit}
         cartCount={cartItems.length}
-        onClearCart={() => setCartItems([])}
+        onClearCart={() => {
+          void handleClearCart({ silent: true });
+        }}
+      />
+
+      <DealsWelcomeModal
+        isOpen={isDealsWelcomeOpen && !isLocationModalOpen}
+        onClose={() => setIsDealsWelcomeOpen(false)}
+        branch={currentBranch}
+        branchName={
+          branchSelection.branchName ||
+          currentBranch?.name ||
+          currentBranch?.city ||
+          currentBranch?.shortName ||
+          ""
+        }
+        onClaimDeal={handleClaimDeal}
+        onBrowseAll={() => scrollToSection("deals-section")}
       />
 
       {
@@ -502,6 +1172,10 @@ const CustomerSite = ({ onOpenAdmin }) => {
     cartItems={cartItems}
     onUpdateQuantity={handleUpdateQuantity}
     onRemoveItem={handleRemoveItem}
+    onClearCart={() => {
+      void handleClearCart();
+    }}
+    isCartBusy={isCartMutating || isCartSyncing}
     onCheckout={() => {
       setIsCartOpen(false);
       setIsCheckoutOpen(true);
@@ -520,10 +1194,25 @@ const CustomerSite = ({ onOpenAdmin }) => {
     onClose={() => setIsCheckoutOpen(false)}
     cartItems={cartItems}
     onOrderPlaced={handleOrderPlaced}
-    onClearCart={() => setCartItems([])}
+    onClearCart={() => {
+      setCartItems([]);
+      clearGuestCart();
+      clearGuestOrderStorage();
+    }}
+    onRequireLogin={handleRequireLoginForCheckout}
     selectedBranch={currentBranch}
     selectedArea={branchSelection.selectedArea}
     orderMode={branchSelection.orderMode}
+    branchId={branchSelection.branchId || currentBranch?.id || ""}
+    branchName={
+      branchSelection.branchName ||
+      currentBranch?.name ||
+      currentBranch?.city ||
+      currentBranch?.shortName ||
+      ""
+    }
+    latitude={branchSelection.latitude || ""}
+    longitude={branchSelection.longitude || ""}
   />
 
       {
@@ -550,11 +1239,9 @@ const CustomerSite = ({ onOpenAdmin }) => {
       <CustomerAuthModal
     isOpen={isAuthModalOpen}
     onClose={() => setIsAuthModalOpen(false)}
-    initialMode="register"
-    onAuthSuccess={() => {
-      setIsAuthModalOpen(false);
-      scrollToSection("hero-section");
-    }}
+    initialMode={authIntent}
+    onAuthSuccess={handleAuthSuccess}
+    onSuccess={handleAuthSuccess}
   />
 
       {

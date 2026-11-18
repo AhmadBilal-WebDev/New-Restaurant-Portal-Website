@@ -100,14 +100,16 @@ const CategoriesPage = () => {
     sort: 1,
     isActive: true,
     showAllBranches: false,
+    branchName: "",
     tags: []
   });
   const buildPayload = () => {
+    const allBranches = formData.showAllBranches === true;
     return {
       frontendDomainUrl: frontendDomainUrlRef.current,
-      showAllBranches: formData.showAllBranches,
+      showAllBranches: allBranches,
       name: formData.name.trim(),
-      branchName: editingCategory ? categoryBranchName(editingCategory) : branchName,
+      branchName: allBranches ? "" : String(formData.branchName || "").trim(),
       description: formData.description.trim(),
       image: formData.image.trim(),
       sort: formData.sort,
@@ -122,7 +124,11 @@ const CategoriesPage = () => {
     try {
       const result = await getCategories({
         frontendDomainUrl: frontendDomainUrlRef.current,
-        ...branchName && !isAllBranches ? { branchName } : {}
+        ...(isAllBranches
+          ? { showAllBranches: true }
+          : branchName
+            ? { showAllBranches: false, branchName }
+            : { showAllBranches: true })
       });
       if (result.ok) {
         const mapped = result.categories.map((cat) => ({
@@ -145,13 +151,15 @@ const CategoriesPage = () => {
     })();
   }, [branchName, isAllBranches]);
   const handleOpenAdd = () => {
+    const defaultBranch = !isAllBranches && branchName ? branchName : liveBranches[0]?.name || "";
     setFormData({
       name: "",
       description: "",
       image: "",
       sort: visibleCategories.length + 1,
       isActive: true,
-      showAllBranches: false,
+      showAllBranches: isAllBranches,
+      branchName: isAllBranches ? "" : defaultBranch,
       tags: []
     });
     setEditingCategory(null);
@@ -159,6 +167,7 @@ const CategoriesPage = () => {
   };
   const handleOpenEdit = (c) => {
     const tags = c.tags || [];
+    const catBranch = categoryBranchName(c) || "";
     setFormData({
       name: c.name,
       description: c.description || "",
@@ -166,6 +175,7 @@ const CategoriesPage = () => {
       sort: c.order ?? 1,
       isActive: c.isActive !== false,
       showAllBranches: c.showAllBranches === true,
+      branchName: c.showAllBranches === true ? "" : catBranch || branchName || liveBranches[0]?.name || "",
       tags
     });
     setEditingCategory(c);
@@ -174,8 +184,8 @@ const CategoriesPage = () => {
   const handleSave = async (e) => {
     e.preventDefault();
     if (!formData.name.trim()) return;
-    if (!branchName) {
-      addToast("Branch Required", "Select a branch before saving a category.", "error");
+    if (!formData.showAllBranches && !String(formData.branchName || "").trim()) {
+      addToast("Branch Required", "Select a branch, or choose All Branches.", "error");
       return;
     }
     if (!formData.image.trim()) {
@@ -211,7 +221,7 @@ const CategoriesPage = () => {
         frontendDomainUrl: frontendDomainUrlRef.current,
         showAllBranches: current.showAllBranches === true,
         name: current.name,
-        branchName: categoryBranchName(current),
+        branchName: current.showAllBranches === true ? "" : categoryBranchName(current),
         description: current.description || "",
         image: current.image,
         sort: swapSort,
@@ -222,7 +232,7 @@ const CategoriesPage = () => {
         frontendDomainUrl: frontendDomainUrlRef.current,
         showAllBranches: swap.showAllBranches === true,
         name: swap.name,
-        branchName: categoryBranchName(swap),
+        branchName: swap.showAllBranches === true ? "" : categoryBranchName(swap),
         description: swap.description || "",
         image: swap.image,
         sort: currentSort,
@@ -244,7 +254,7 @@ const CategoriesPage = () => {
       frontendDomainUrl: frontendDomainUrlRef.current,
       showAllBranches: cat.showAllBranches === true,
       name: cat.name,
-      branchName: categoryBranchName(cat),
+      branchName: cat.showAllBranches === true ? "" : categoryBranchName(cat),
       description: cat.description || "",
       image: cat.image,
       sort: cat.order ?? 1,
@@ -886,28 +896,62 @@ const CategoriesPage = () => {
                 </div>
               </fieldset>
 
-              <div className="space-y-2 rounded-2xl border border-[#292D35] bg-[#14171C] p-3.5">
+              <div className="space-y-2.5 rounded-2xl border border-[#292D35] bg-[#14171C] p-3.5">
+                <p className="text-neutral-300 font-bold text-[12px]">Branch *</p>
                 <label className="flex items-center gap-2.5 cursor-pointer">
                   <input
-    type="checkbox"
-    id="cat-all-branches-toggle"
-    checked={formData.showAllBranches}
-    onChange={(e) => setFormData({ ...formData, showAllBranches: e.target.checked })}
-    className="rounded border-[#292D35] text-[#FF5A1F]"
-  />
+                    type="checkbox"
+                    id="cat-all-branches-toggle"
+                    checked={formData.showAllBranches}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        showAllBranches: e.target.checked,
+                        branchName: e.target.checked
+                          ? ""
+                          : formData.branchName || branchName || liveBranches[0]?.name || ""
+                      })
+                    }
+                    className="rounded border-[#292D35] text-[#FF5A1F]"
+                  />
                   <span className="text-neutral-300 font-semibold text-[12px]">
                     Show this category in all branches
                   </span>
                 </label>
+                <select
+                  disabled={formData.showAllBranches}
+                  value={formData.showAllBranches ? "" : formData.branchName || ""}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      showAllBranches: false,
+                      branchName: e.target.value
+                    })
+                  }
+                  className={`${inputClass} disabled:cursor-not-allowed disabled:opacity-50`}
+                >
+                  <option value="">Select branch…</option>
+                  {liveBranches.map((b) => (
+                    <option key={b.id} value={b.name}>
+                      {b.name}
+                      {b.branchCode || b.shortName ? ` (${b.branchCode || b.shortName})` : ""}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-neutral-500">
+                  {formData.showAllBranches
+                    ? "Category will appear across every branch."
+                    : "Choose the branch where this category should appear."}
+                </p>
 
-                <label className="flex items-center gap-2.5 cursor-pointer">
+                <label className="flex items-center gap-2.5 cursor-pointer pt-1 border-t border-[#292D35]">
                   <input
-    type="checkbox"
-    id="cat-active-toggle"
-    checked={formData.isActive}
-    onChange={(e) => setFormData({ ...formData, isActive: e.target.checked })}
-    className="rounded border-[#292D35] text-[#FF5A1F]"
-  />
+                    type="checkbox"
+                    id="cat-active-toggle"
+                    checked={formData.isActive}
+                    onChange={(e) => setFormData({ ...formData, isActive: e.target.checked })}
+                    className="rounded border-[#292D35] text-[#FF5A1F]"
+                  />
                   <span className="text-neutral-300 font-semibold text-[12px]">
                     Active & displayed on website
                   </span>

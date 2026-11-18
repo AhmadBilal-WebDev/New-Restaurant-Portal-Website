@@ -10,7 +10,7 @@ async function GET(request) {
   const baseUrl = API_BASE_URL.replace(/\/$/, "");
   const authHeader = request.headers.get("authorization");
   const target = new URL(`${baseUrl}/api/restaurant/catalog/categories`);
-  for (const key of ["frontendDomainUrl", "branchName", "tag"]) {
+  for (const key of ["frontendDomainUrl", "branchName", "showAllBranches", "tag"]) {
     const value = request.nextUrl.searchParams.get(key);
     if (value) target.searchParams.set(key, value);
   }

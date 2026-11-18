@@ -6,6 +6,7 @@ import heroMealImg from '@/assets/images/hero_burger_meal_1789195599245.jpg';
 import { categoryTagLabel } from '@/shared/lib/catalogApi';
 const MenuSection = ({
   products,
+  categories: categoriesProp,
   catalogReady,
   selectedCategory,
   onSelectCategory,
@@ -16,7 +17,8 @@ const MenuSection = ({
   favorites,
   onToggleFavorite
 }) => {
-  const { categories } = useRestaurant();
+  const { categories: contextCategories } = useRestaurant();
+  const categories = categoriesProp || contextCategories;
   const [sortBy, setSortBy] = useState("recommended");
   const scrollContainerRef = useRef(null);
   const activeCategories = catalogReady ? categories.filter(
@@ -38,9 +40,23 @@ const MenuSection = ({
     }
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase().trim();
-      result = result.filter(
-        (p) => p.name.toLowerCase().includes(q) || p.description.toLowerCase().includes(q) || p.category.toLowerCase().includes(q) || p.tags && p.tags.some((t) => t.toLowerCase().includes(q))
-      );
+      result = result.filter((p) => {
+        const tagMatch = (p.tags || []).some((t) => {
+          const key = typeof t === "string" ? t : t?.key || t?.label || "";
+          return String(key).toLowerCase().includes(q);
+        });
+        const displayTagMatch = (p.displayTags || []).some((t) =>
+          `${t.label || ""} ${t.key || ""}`.toLowerCase().includes(q)
+        );
+        return (
+          (p.name || "").toLowerCase().includes(q) ||
+          (p.description || "").toLowerCase().includes(q) ||
+          (p.categoryName || "").toLowerCase().includes(q) ||
+          (p.category || "").toLowerCase().includes(q) ||
+          tagMatch ||
+          displayTagMatch
+        );
+      });
     }
     const getNumericPrice = (p) => {
       if (typeof p.price === "number") return p.price;
@@ -258,9 +274,13 @@ const MenuSection = ({
     >
                   {category.name}
                 </span>
-                {category.tags?.[0] && <span className="mt-1 max-w-full truncate rounded-full bg-[#FFF1E8] px-2 py-0.5 text-[9px] font-bold text-[#C94312]">
-                    {categoryTagLabel(category.tags[0])}
-                  </span>}
+                {(category.displayTags?.[0] || category.tags?.[0]) && (
+                  <span className="mt-1 max-w-full truncate rounded-full bg-[#FFF1E8] px-2 py-0.5 text-[9px] font-bold text-[#C94312]">
+                    {category.displayTags?.[0]
+                      ? `${category.displayTags[0].emoji ? `${category.displayTags[0].emoji} ` : ""}${category.displayTags[0].label}`
+                      : categoryTagLabel(category.tags[0])}
+                  </span>
+                )}
                 <span className="text-[10px] text-[#888888] font-semibold mt-0.5">
                   {count} item{count === 1 ? "" : "s"}
                 </span>

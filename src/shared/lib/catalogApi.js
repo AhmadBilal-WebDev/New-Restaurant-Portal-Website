@@ -79,6 +79,15 @@ function textValue(row, keys) {
     const value = row[key];
     if (typeof value === "string" && value.trim()) return value.trim();
     if (typeof value === "number") return String(value);
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const nested =
+        (typeof value.name === "string" && value.name.trim()) ||
+        (typeof value.branchName === "string" && value.branchName.trim()) ||
+        (typeof value.shortName === "string" && value.shortName.trim()) ||
+        (typeof value.branchCode === "string" && value.branchCode.trim()) ||
+        "";
+      if (nested) return nested;
+    }
   }
   return "";
 }
@@ -210,6 +219,7 @@ function mapProduct(row) {
   );
   const discountPrice = numberValue(record, ["discountPrice"], 0);
   const branchName = textValue(record, ["branchName", "branch"]);
+  const showAllBranches = boolValue(record, ["showAllBranches"], false);
   let promotionalTag;
   if (boolValue(record, ["isFeatured"], false) || tags.includes("featured")) {
     promotionalTag = { type: "best_seller", text: "Best Seller" };
@@ -270,6 +280,7 @@ function mapProduct(row) {
     isActive: boolValue(record, ["isActive"], true),
     sort: numberValue(record, ["sort", "order"], 0),
     branchName,
+    showAllBranches,
     createdAt: textValue(record, [
       "createdAt",
       "created_at",
@@ -315,6 +326,9 @@ function buildListQuery(params) {
   const query = new URLSearchParams();
   if (params.frontendDomainUrl) query.set("frontendDomainUrl", params.frontendDomainUrl);
   if (params.branchName) query.set("branchName", params.branchName);
+  if (typeof params.showAllBranches === "boolean") {
+    query.set("showAllBranches", params.showAllBranches ? "true" : "false");
+  }
   if (params.tag) query.set("tag", params.tag);
   return query.toString();
 }

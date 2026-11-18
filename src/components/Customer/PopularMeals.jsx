@@ -12,7 +12,12 @@ const PopularMeals = ({
 }) => {
   const { popularMealIds } = useRestaurant();
   const popularItems = products.filter(
-    (p) => p.isPopular || popularMealIds && popularMealIds.includes(p.id)
+    (p) =>
+      p.isPopular ||
+      p.isFeatured ||
+      p.isRecommended ||
+      p.isBestseller ||
+      (popularMealIds && popularMealIds.includes(p.id))
   );
   const displayItems = popularItems.length > 0 ? popularItems : products.slice(0, 4);
   if (!catalogReady || products.length === 0) return null;
