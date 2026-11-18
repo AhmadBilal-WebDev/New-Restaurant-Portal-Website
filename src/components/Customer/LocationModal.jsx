@@ -27,6 +27,7 @@ import {
   isGeolocationSecureContext,
   requestCurrentPosition
 } from '@/shared/lib/geolocation';
+import { reverseGeocodeLatLng } from '@/shared/lib/reverseGeocode';
 
 const ENGLISH_TILE_URL =
   "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}";
@@ -218,6 +219,8 @@ const LocationModal = ({
   const [orderMode, setOrderMode] = useState(currentSelection?.orderMode || "delivery");
   const [searchQuery, setSearchQuery] = useState("");
   const [addressQuery, setAddressQuery] = useState("");
+  const [addressSuggestions, setAddressSuggestions] = useState([]);
+  const [showAddressSuggestions, setShowAddressSuggestions] = useState(false);
   const [userLat, setUserLat] = useState(currentSelection?.latitude || "");
   const [userLng, setUserLng] = useState(currentSelection?.longitude || "");
   const [isLocating, setIsLocating] = useState(false);
@@ -227,6 +230,11 @@ const LocationModal = ({
   const [showCartWarning, setShowCartWarning] = useState(false);
   const [pendingBranchId, setPendingBranchId] = useState(null);
   const [gpsSecureContext, setGpsSecureContext] = useState(true);
+  const [resolvedPlaceName, setResolvedPlaceName] = useState("");
+  const [isConfirming, setIsConfirming] = useState(false);
+  const addressSuggestTimerRef = useRef(null);
+  const addressBlurTimerRef = useRef(null);
+  const skipNextAddressSuggestRef = useRef(false);
 
   const branches = publicBranches.length ? publicBranches : fallbackBranches;
 
@@ -264,8 +272,19 @@ const LocationModal = ({
     setUserLat(currentSelection?.latitude || "");
     setUserLng(currentSelection?.longitude || "");
     setCoverage(null);
+    setAddressQuery("");
+    setAddressSuggestions([]);
+    setShowAddressSuggestions(false);
+    setResolvedPlaceName(currentSelection?.locationLabel || "");
     setGpsSecureContext(isGeolocationSecureContext());
   }, [isOpen, currentSelection]);
+
+  useEffect(() => {
+    return () => {
+      if (addressSuggestTimerRef.current) window.clearTimeout(addressSuggestTimerRef.current);
+      if (addressBlurTimerRef.current) window.clearTimeout(addressBlurTimerRef.current);
+    };
+  }, []);
 
   const activeBranch = useMemo(
     () => branches.find((b) => b.id === selectedBranchId) || branches[0] || null,
@@ -313,11 +332,21 @@ const LocationModal = ({
   );
 
   const applyUserLocation = useCallback(
-    async (lat, lng) => {
+    async (lat, lng, placeLabel = "") => {
       const latStr = String(lat);
       const lngStr = String(lng);
       setUserLat(latStr);
       setUserLng(lngStr);
+
+      let label = String(placeLabel || "").trim();
+      if (!label) {
+        const geo = await reverseGeocodeLatLng(latStr, lngStr);
+        if (geo.ok && geo.result) {
+          label = geo.result.shortName || geo.result.name || "";
+        }
+      }
+      setResolvedPlaceName(label);
+
       // Coverage check is for delivery only; pick-up just needs the pin.
       if (orderMode === "delivery" && selectedBranchId) {
         await runCoverageCheck(selectedBranchId, latStr, lngStr);
@@ -328,6 +357,7 @@ const LocationModal = ({
             : null
         );
       }
+      return label;
     },
     [selectedBranchId, runCoverageCheck, orderMode]
   );
@@ -376,37 +406,118 @@ const LocationModal = ({
     }
   };
 
-  const handleAddressSearch = async () => {
-    const q = addressQuery.trim();
-    if (q.length < 3) return;
-    setIsSearching(true);
-    try {
-      const cityHint = activeBranch?.city || activeBranch?.name || "";
-      const params = new URLSearchParams({ q });
-      if (cityHint) params.set("city", cityHint);
-      const response = await fetch(`/api/geocode?${params}`, {
-        headers: { Accept: "application/json" },
-        cache: "no-store"
-      });
-      const data = await response.json();
-      if (!data?.ok || !data?.result) {
-        setCoverage({
-          allowed: false,
-          message: "Address / location not found. Try another search.",
-          ok: false
-        });
-        return;
+  const fetchAddressSuggestions = useCallback(
+    async (rawQuery, { selectFirst = false } = {}) => {
+      const q = String(rawQuery || "").trim();
+      if (q.length < 2) {
+        setAddressSuggestions([]);
+        setShowAddressSuggestions(false);
+        return [];
       }
-      await applyUserLocation(data.result.latitude, data.result.longitude);
-    } catch {
-      setCoverage({
-        allowed: false,
-        message: "Address search failed. Try again.",
-        ok: false
-      });
-    } finally {
-      setIsSearching(false);
+
+      setIsSearching(true);
+      try {
+        const cityHint = activeBranch?.city || activeBranch?.name || "";
+        const params = new URLSearchParams({
+          q,
+          limit: "8"
+        });
+        if (cityHint) params.set("city", cityHint);
+        const branchLat = activeBranch?.latitude;
+        const branchLng = activeBranch?.longitude;
+        if (branchLat != null && branchLng != null) {
+          params.set("lat", String(branchLat));
+          params.set("lon", String(branchLng));
+        }
+
+        const response = await fetch(`/api/geocode?${params}`, {
+          headers: { Accept: "application/json" },
+          cache: "no-store"
+        });
+        const data = await response.json();
+        const results = Array.isArray(data?.results)
+          ? data.results
+          : data?.result
+            ? [data.result]
+            : [];
+
+        setAddressSuggestions(results);
+        setShowAddressSuggestions(results.length > 0);
+
+        if (!results.length) {
+          if (selectFirst) {
+            setCoverage({
+              allowed: false,
+              message: "Address / location not found. Try another search.",
+              ok: false
+            });
+          }
+          return [];
+        }
+
+        if (selectFirst && results[0]) {
+          skipNextAddressSuggestRef.current = true;
+          setAddressQuery(results[0].name || q);
+          setShowAddressSuggestions(false);
+          await applyUserLocation(
+            results[0].latitude,
+            results[0].longitude,
+            results[0].name || ""
+          );
+        }
+
+        return results;
+      } catch {
+        setAddressSuggestions([]);
+        setShowAddressSuggestions(false);
+        if (selectFirst) {
+          setCoverage({
+            allowed: false,
+            message: "Address search failed. Try again.",
+            ok: false
+          });
+        }
+        return [];
+      } finally {
+        setIsSearching(false);
+      }
+    },
+    [activeBranch, applyUserLocation]
+  );
+
+  const handleAddressInputChange = (value) => {
+    setAddressQuery(value);
+    if (addressSuggestTimerRef.current) window.clearTimeout(addressSuggestTimerRef.current);
+    if (skipNextAddressSuggestRef.current) {
+      skipNextAddressSuggestRef.current = false;
+      return;
     }
+    const q = value.trim();
+    if (q.length < 2) {
+      setAddressSuggestions([]);
+      setShowAddressSuggestions(false);
+      return;
+    }
+    addressSuggestTimerRef.current = window.setTimeout(() => {
+      void fetchAddressSuggestions(q);
+    }, 350);
+  };
+
+  const handleSelectAddressSuggestion = async (suggestion) => {
+    if (!suggestion) return;
+    skipNextAddressSuggestRef.current = true;
+    setAddressQuery(suggestion.name || addressQuery);
+    setAddressSuggestions([]);
+    setShowAddressSuggestions(false);
+    await applyUserLocation(
+      suggestion.latitude,
+      suggestion.longitude,
+      suggestion.name || suggestion.subtitle || ""
+    );
+  };
+
+  const handleAddressSearch = async () => {
+    await fetchAddressSuggestions(addressQuery, { selectFirst: true });
   };
 
   const hasCustomerLocation = Boolean(userLat && userLng);
@@ -417,26 +528,47 @@ const LocationModal = ({
     hasCustomerLocation &&
     (orderMode === "pickup" || coverage?.allowed === true);
 
-  const handleConfirm = () => {
-    if (!canConfirm || !activeBranch) return;
+  const handleConfirm = async () => {
+    if (!canConfirm || !activeBranch || isConfirming) return;
     if (cartCount > 0 && selectedBranchId !== currentSelection?.branchId) {
       setPendingBranchId(selectedBranchId);
       setShowCartWarning(true);
       return;
     }
 
-    const selection = {
-      branchId: selectedBranchId,
-      branchName: activeBranch.name,
-      selectedArea: activeBranch.city || activeBranch.area || activeBranch.name,
-      orderMode,
-      latitude: userLat || "",
-      longitude: userLng || "",
-      allowed: orderMode === "pickup" ? true : coverage?.allowed === true
-    };
-    writeLocationSession(selection);
-    onSelectBranch(selection);
-    onClose();
+    setIsConfirming(true);
+    try {
+      let placeName = resolvedPlaceName;
+      if ((!placeName || placeName === activeBranch.city) && userLat && userLng) {
+        const geo = await reverseGeocodeLatLng(userLat, userLng);
+        if (geo.ok && geo.result) {
+          placeName = geo.result.shortName || geo.result.name || placeName;
+          setResolvedPlaceName(placeName);
+        }
+      }
+
+      const selection = {
+        branchId: selectedBranchId,
+        branchName: activeBranch.name,
+        // Customer pin address from lat/lng — not branch city name.
+        selectedArea:
+          placeName ||
+          addressQuery.trim() ||
+          activeBranch.city ||
+          activeBranch.area ||
+          activeBranch.name,
+        locationLabel: placeName || addressQuery.trim() || "",
+        orderMode,
+        latitude: userLat || "",
+        longitude: userLng || "",
+        allowed: orderMode === "pickup" ? true : coverage?.allowed === true
+      };
+      writeLocationSession(selection);
+      onSelectBranch(selection);
+      onClose();
+    } finally {
+      setIsConfirming(false);
+    }
   };
 
   if (!isOpen) return null;
@@ -711,25 +843,62 @@ const LocationModal = ({
 
               <div className="flex flex-col gap-2 sm:flex-row">
                 <div className="relative flex-1">
-                  <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-neutral-400" />
+                  <Search className="absolute left-3 top-1/2 z-10 h-3.5 w-3.5 -translate-y-1/2 text-neutral-400" />
                   <input
                     type="text"
                     value={addressQuery}
-                    onChange={(e) => setAddressQuery(e.target.value)}
+                    onChange={(e) => handleAddressInputChange(e.target.value)}
+                    onFocus={() => {
+                      if (addressSuggestions.length) setShowAddressSuggestions(true);
+                    }}
+                    onBlur={() => {
+                      addressBlurTimerRef.current = window.setTimeout(() => {
+                        setShowAddressSuggestions(false);
+                      }, 180);
+                    }}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
                         e.preventDefault();
                         void handleAddressSearch();
                       }
+                      if (e.key === "Escape") {
+                        setShowAddressSuggestions(false);
+                      }
                     }}
-                    placeholder="Search area / address..."
+                    placeholder="Search like Google Maps (area, street, landmark)..."
+                    autoComplete="off"
                     className="w-full rounded-xl border border-[#E9E2D8] bg-white py-2.5 pl-9 pr-3 text-xs text-[#191919] focus:border-[#E51B23] focus:outline-none"
                   />
+                  {showAddressSuggestions && addressSuggestions.length > 0 ? (
+                    <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-30 max-h-56 overflow-y-auto rounded-xl border border-[#E9E2D8] bg-white shadow-lg">
+                      {addressSuggestions.map((item) => (
+                        <button
+                          key={`${item.id || item.name}-${item.latitude}-${item.longitude}`}
+                          type="button"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => void handleSelectAddressSuggestion(item)}
+                          className="flex w-full items-start gap-2 border-b border-[#F0EBE3] px-3 py-2.5 text-left last:border-b-0 hover:bg-[#FFF9EF]"
+                        >
+                          <MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#E51B23]" />
+                          <span className="min-w-0">
+                            <span className="block truncate text-xs font-bold text-[#191919]">
+                              {item.name}
+                            </span>
+                            {item.subtitle ? (
+                              <span className="mt-0.5 block truncate text-[11px] text-[#777]">
+                                {item.subtitle}
+                              </span>
+                            ) : null}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
                 <button
                   type="button"
                   onClick={() => void handleAddressSearch()}
-                  disabled={isSearching || addressQuery.trim().length < 3}
+                  disabled={isSearching || addressQuery.trim().length < 2}
                   className="rounded-xl bg-[#191919] px-4 py-2.5 text-xs font-bold text-white disabled:opacity-50"
                 >
                   {isSearching ? "Searching..." : "Find"}
@@ -746,6 +915,13 @@ const LocationModal = ({
                   <p className="font-mono font-bold text-[#191919]">{userLng || "—"}</p>
                 </div>
               </div>
+
+              {resolvedPlaceName ? (
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-xs">
+                  <p className="font-semibold text-emerald-800">Detected address</p>
+                  <p className="mt-0.5 font-bold text-[#191919]">{resolvedPlaceName}</p>
+                </div>
+              ) : null}
 
               <LocationPickerMap
                 branch={activeBranch}
@@ -821,11 +997,11 @@ const LocationModal = ({
             )}
             <button
               type="button"
-              onClick={handleConfirm}
-              disabled={!canConfirm}
+              onClick={() => void handleConfirm()}
+              disabled={!canConfirm || isConfirming}
               className="flex flex-1 items-center justify-center gap-1.5 rounded-full bg-[#E51B23] px-6 py-2.5 text-xs font-extrabold text-white shadow-glow-red transition-all hover:-translate-y-0.5 hover:bg-[#B90F16] disabled:cursor-not-allowed disabled:opacity-50 sm:flex-none sm:text-sm"
             >
-              <span>Confirm location</span>
+              <span>{isConfirming ? "Saving..." : "Confirm location"}</span>
               <ChevronRight className="h-4 w-4" />
             </button>
           </div>

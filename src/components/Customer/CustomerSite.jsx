@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useMemo, useRef } from "react";
+import { useRouter } from "next/navigation";
 import { useRestaurant } from '@/contexts/RestaurantContext';
 import { Header } from '@/components/Customer/Header';
 import { Hero } from '@/components/Customer/Hero';
@@ -8,7 +9,6 @@ import { PopularMeals } from '@/components/Customer/PopularMeals';
 import { MenuSection } from '@/components/Customer/MenuSection';
 import { ProductDetailModal } from '@/components/Customer/ProductDetailModal';
 import { CartDrawer } from '@/components/Customer/CartDrawer';
-import { CheckoutModal } from '@/components/Customer/CheckoutModal';
 import { DealsSection } from '@/components/Customer/DealsSection';
 import { DealsWelcomeModal } from '@/components/Customer/DealsWelcomeModal';
 import { BrandStory } from '@/components/Customer/BrandStory';
@@ -35,17 +35,21 @@ import {
 import { getPublicFrontendDomainUrl } from '@/shared/lib/catalogApi';
 import {
   clearGuestCart,
-  clearGuestOrderStorage,
   clearPendingCheckout,
   hasPendingCheckout,
+  readCheckoutDraft,
   readGuestCart,
+  setPendingCheckout,
   writeGuestCart
 } from '@/shared/lib/guestCartStorage';
+import { writeCheckoutSession } from '@/shared/lib/checkoutSession';
 import {
   addUserCartItem,
   adjustUserCartItemQuantity,
   buildAddCartItemPayload,
   buildCartSyncPayload,
+  buildCheckoutPayload,
+  checkoutUserCart,
   clearUserCart,
   getUserCart,
   removeUserCartItem,
@@ -53,6 +57,7 @@ import {
 } from '@/shared/lib/userCartApi';
 import { ArrowUp, Shield } from "lucide-react";
 const CustomerSite = ({ onOpenAdmin }) => {
+  const router = useRouter();
   const {
     config,
     products: contextProducts,
@@ -60,7 +65,6 @@ const CustomerSite = ({ onOpenAdmin }) => {
     orders,
     currentUser,
     customerUser,
-    placeCustomerOrder,
     addToast,
     formatPrice
   } = useRestaurant();
@@ -71,6 +75,7 @@ const CustomerSite = ({ onOpenAdmin }) => {
   const [resumeCheckoutAfterAuth, setResumeCheckoutAfterAuth] = useState(false);
   const [isCartSyncing, setIsCartSyncing] = useState(false);
   const [isCartMutating, setIsCartMutating] = useState(false);
+  const [isPreparingCheckout, setIsPreparingCheckout] = useState(false);
   const cartSyncInFlightRef = useRef(false);
   const cartSyncedForUserRef = useRef("");
   const cartMutatingRef = useRef(false);
@@ -95,7 +100,8 @@ const CustomerSite = ({ onOpenAdmin }) => {
       if (saved?.branchId && saved?.orderMode) {
         setBranchSelection({
           branchId: saved.branchId,
-          selectedArea: saved.selectedArea || saved.branchName || "",
+          selectedArea: saved.selectedArea || saved.locationLabel || saved.branchName || "",
+          locationLabel: saved.locationLabel || saved.selectedArea || "",
           orderMode: saved.orderMode,
           latitude: saved.latitude || "",
           longitude: saved.longitude || "",
@@ -165,7 +171,6 @@ const CustomerSite = ({ onOpenAdmin }) => {
   const [favorites, setFavorites] = useState(["classic-smash-meal", "loaded-bbq-burger"]);
   const [selectedProductForModal, setSelectedProductForModal] = useState(null);
   const [isCartOpen, setIsCartOpen] = useState(false);
-  const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
   const [isTrackingOpen, setIsTrackingOpen] = useState(false);
   const [isTimetableModalOpen, setIsTimetableModalOpen] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
@@ -357,11 +362,12 @@ const CustomerSite = ({ onOpenAdmin }) => {
   const handleSelectBranch = (selection) => {
     const next = {
       branchId: selection.branchId,
-      selectedArea: selection.selectedArea || selection.branchName || "",
+      selectedArea: selection.selectedArea || selection.locationLabel || selection.branchName || "",
+      locationLabel: selection.locationLabel || selection.selectedArea || "",
       orderMode: selection.orderMode || "delivery",
       latitude: selection.latitude || "",
       longitude: selection.longitude || "",
-      branchName: selection.branchName || selection.selectedArea || ""
+      branchName: selection.branchName || ""
     };
     setBranchSelection(next);
     writeLocationSession(next);
@@ -371,7 +377,7 @@ const CustomerSite = ({ onOpenAdmin }) => {
     setIsDealsWelcomeOpen(true);
     addToast(
       "Location confirmed",
-      `${next.branchName || next.selectedArea || "Branch"} · ${
+      `${next.locationLabel || next.selectedArea || next.branchName || "Branch"} · ${
         next.orderMode === "pickup" ? "Pick-Up" : "Delivery"
       }${next.latitude ? ` · ${next.latitude}, ${next.longitude}` : ""}`,
       "success"
@@ -727,32 +733,114 @@ const CustomerSite = ({ onOpenAdmin }) => {
       return updated;
     });
   };
-  const handleOrderPlaced = (order) => {
-    setLatestOrder(order);
-    placeCustomerOrder({
-      items: order.items,
-      customerName: order.customerName,
-      phone: order.customerPhone || customerUser?.phone || "",
-      address: order.deliveryAddress || "Local Address",
-      branchId: currentBranch?.id || "branch-renala",
-      paymentMethod: "card",
-      orderMode: order.deliveryMethod === "pickup" ? "pickup" : "delivery",
-      subtotal: order.subtotal,
-      deliveryFee: order.deliveryFee,
-      tax: order.tax,
-      total: order.total,
-      notes: "Customer placed order via website storefront."
+  const buildCheckoutRequestPayload = () => {
+    const draft = readCheckoutDraft() || {};
+    const branchId = branchSelection.branchId || currentBranch?.id || "";
+    const branchName =
+      branchSelection.branchName ||
+      currentBranch?.name ||
+      currentBranch?.city ||
+      currentBranch?.shortName ||
+      "";
+    const orderMode = branchSelection.orderMode || "delivery";
+    const selectedArea =
+      branchSelection.locationLabel ||
+      branchSelection.selectedArea ||
+      branchName ||
+      currentBranch?.city ||
+      "";
+    const deliveryAddress =
+      [draft.address, draft.apartment, draft.city].filter(Boolean).join(", ") ||
+      branchSelection.locationLabel ||
+      selectedArea ||
+      currentBranch?.address ||
+      "";
+    const deliveryFee =
+      orderMode === "pickup" ? 0 : Number(currentBranch?.deliveryFee) || 0;
+
+    return buildCheckoutPayload({
+      frontendDomainUrl: getPublicFrontendDomainUrl(),
+      branchId,
+      branchName,
+      orderMode,
+      paymentMethod: draft.paymentMethod || "cod",
+      selectedArea,
+      latitude: branchSelection.latitude || "",
+      longitude: branchSelection.longitude || "",
+      deliveryAddress,
+      deliveryFee,
+      notes: draft.deliveryNotes || "",
+      customerName: customerUser?.name || draft.fullName || "",
+      customerContact: customerUser?.phone || draft.phone || ""
     });
-    clearGuestOrderStorage();
-    setResumeCheckoutAfterAuth(false);
   };
 
-  const handleRequireLoginForCheckout = () => {
-    setResumeCheckoutAfterAuth(true);
-    setAuthIntent("login");
-    setIsCheckoutOpen(false);
-    setIsCartOpen(false);
-    setIsAuthModalOpen(true);
+  const prepareCheckoutAndOpenPage = async ({ showToast = true } = {}) => {
+    if (!cartItems.length) {
+      addToast("Cart empty", "Add items before checkout.", "error");
+      return { ok: false };
+    }
+    if (!branchSelection.branchId && !currentBranch?.id) {
+      addToast("Branch required", "Select your branch / location first.", "error");
+      setIsLocationModalOpen(true);
+      return { ok: false };
+    }
+    if (!branchSelection.latitude || !branchSelection.longitude) {
+      addToast("Location required", "Set your map location before checkout.", "error");
+      setIsLocationModalOpen(true);
+      return { ok: false };
+    }
+
+    if (isPreparingCheckout) return { ok: false, skipped: true };
+    setIsPreparingCheckout(true);
+    try {
+      const payload = buildCheckoutRequestPayload();
+      const result = await checkoutUserCart(payload);
+      const ok = result.ok || result.success === true;
+
+      if (!ok) {
+        if (!customerUser) {
+          // Guest may not have server cart yet — login, sync, then retry.
+          setPendingCheckout(true);
+          setResumeCheckoutAfterAuth(true);
+          setAuthIntent("login");
+          setIsAuthModalOpen(true);
+          if (showToast) {
+            addToast(
+              "Login to continue checkout",
+              result.message || "Sign in so we can prepare your checkout.",
+              "info"
+            );
+          }
+          return { ok: false, needsLogin: true };
+        }
+        if (showToast) {
+          addToast("Checkout failed", result.message || "Could not prepare checkout.", "error");
+        }
+        return { ok: false };
+      }
+
+      writeCheckoutSession({
+        requestPayload: payload,
+        response: {
+          ...(result.data || {}),
+          checkoutItems: result.checkoutItems,
+          success: result.success,
+          checkoutAllowed: result.checkoutAllowed,
+          nextStep: result.nextStep,
+          nextApi: result.nextApi
+        },
+        fallbackItems: cartItems,
+        createdAt: new Date().toISOString()
+      });
+      clearPendingCheckout();
+      setResumeCheckoutAfterAuth(false);
+      setIsCartOpen(false);
+      router.push("/checkout");
+      return { ok: true };
+    } finally {
+      setIsPreparingCheckout(false);
+    }
   };
 
   /**
@@ -899,12 +987,8 @@ const CustomerSite = ({ onOpenAdmin }) => {
     if (resumeCheckoutAfterAuth || hasPendingCheckout()) {
       clearPendingCheckout();
       setResumeCheckoutAfterAuth(false);
-      setIsCheckoutOpen(true);
-      addToast(
-        "Welcome back",
-        "You're signed in. Review checkout and place your order.",
-        "success"
-      );
+      addToast("Welcome back", "Preparing your checkout review...", "success");
+      await prepareCheckoutAndOpenPage({ showToast: true });
       return;
     }
     scrollToSection("hero-section");
@@ -1175,44 +1259,14 @@ const CustomerSite = ({ onOpenAdmin }) => {
     onClearCart={() => {
       void handleClearCart();
     }}
-    isCartBusy={isCartMutating || isCartSyncing}
+    isCartBusy={isCartMutating || isCartSyncing || isPreparingCheckout}
     onCheckout={() => {
-      setIsCartOpen(false);
-      setIsCheckoutOpen(true);
+      void prepareCheckoutAndOpenPage({ showToast: true });
     }}
     onBrowseMenu={() => {
       setIsCartOpen(false);
       scrollToSection("menu-section");
     }}
-  />
-
-      {
-    /* Checkout Modal */
-  }
-      <CheckoutModal
-    isOpen={isCheckoutOpen}
-    onClose={() => setIsCheckoutOpen(false)}
-    cartItems={cartItems}
-    onOrderPlaced={handleOrderPlaced}
-    onClearCart={() => {
-      setCartItems([]);
-      clearGuestCart();
-      clearGuestOrderStorage();
-    }}
-    onRequireLogin={handleRequireLoginForCheckout}
-    selectedBranch={currentBranch}
-    selectedArea={branchSelection.selectedArea}
-    orderMode={branchSelection.orderMode}
-    branchId={branchSelection.branchId || currentBranch?.id || ""}
-    branchName={
-      branchSelection.branchName ||
-      currentBranch?.name ||
-      currentBranch?.city ||
-      currentBranch?.shortName ||
-      ""
-    }
-    latitude={branchSelection.latitude || ""}
-    longitude={branchSelection.longitude || ""}
   />
 
       {

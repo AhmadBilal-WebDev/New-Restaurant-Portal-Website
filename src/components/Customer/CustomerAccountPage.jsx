@@ -27,6 +27,8 @@ import {
   updateCustomerProfileApi,
   uploadCustomerProfilePitcher
 } from '@/shared/lib/customerAuthApi';
+import { getPublicFrontendDomainUrl } from '@/shared/lib/catalogApi';
+import { getUserOrderById, getUserOrders } from '@/shared/lib/userOrdersApi';
 
 const NAV = [
   { id: "home", label: "Home", icon: Home },
@@ -499,35 +501,75 @@ function ProfilePanel({ onAccountDeleted }) {
 }
 
 function OrdersPanel({ onReorder, onExploreMenu }) {
-  const { customerUser, orders, riders, formatPrice } = useRestaurant();
+  const { customerUser, riders, formatPrice, addToast } = useRestaurant();
   const [selectedId, setSelectedId] = useState(null);
+  const [userOrders, setUserOrders] = useState([]);
+  const [activeOrder, setActiveOrder] = useState(null);
+  const [loadingList, setLoadingList] = useState(false);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+  const [listError, setListError] = useState("");
 
-  const userOrders = useMemo(() => {
-    return orders
-      .filter((o) => {
-        if (!customerUser) return false;
-        const matchEmail =
-          customerUser.email &&
-          o.customerEmail &&
-          o.customerEmail.toLowerCase() === customerUser.email.toLowerCase();
-        const matchPhone =
-          customerUser.phone &&
-          o.customerPhone &&
-          o.customerPhone.replace(/[^0-9]/g, "") ===
-            customerUser.phone.replace(/[^0-9]/g, "");
-        const matchName =
-          customerUser.name &&
-          o.customerName &&
-          o.customerName.toLowerCase() === customerUser.name.toLowerCase();
-        return matchEmail || matchPhone || matchName;
-      })
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }, [orders, customerUser]);
+  useEffect(() => {
+    let cancelled = false;
+    async function loadOrders() {
+      if (!customerUser) {
+        setUserOrders([]);
+        setActiveOrder(null);
+        return;
+      }
+      setLoadingList(true);
+      setListError("");
+      const result = await getUserOrders(getPublicFrontendDomainUrl());
+      if (cancelled) return;
+      setLoadingList(false);
+      if (!result.ok) {
+        setListError(result.message || "Could not load orders.");
+        setUserOrders([]);
+        return;
+      }
+      const sorted = [...(result.orders || [])].sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      );
+      setUserOrders(sorted);
+      if (sorted[0]) setSelectedId(sorted[0].orderId || sorted[0].id);
+    }
+    void loadOrders();
+    return () => {
+      cancelled = true;
+    };
+  }, [customerUser]);
 
-  const active = userOrders.find((o) => o.orderId === selectedId) || userOrders[0] || null;
+  useEffect(() => {
+    let cancelled = false;
+    async function loadDetail() {
+      if (!selectedId || !customerUser) {
+        setActiveOrder(null);
+        return;
+      }
+      const fromList = userOrders.find(
+        (o) => (o.orderId || o.id) === selectedId
+      );
+      setActiveOrder(fromList || null);
+      setLoadingDetail(true);
+      const result = await getUserOrderById(selectedId, getPublicFrontendDomainUrl());
+      if (cancelled) return;
+      setLoadingDetail(false);
+      if (result.ok && result.order) {
+        setActiveOrder(result.order);
+      } else if (!fromList && result.message) {
+        addToast?.("Order detail", result.message, "error");
+      }
+    }
+    void loadDetail();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId, customerUser, userOrders, addToast]);
+
+  const active = activeOrder;
   const rider = active?.assignedRiderId
     ? riders.find((r) => r.id === active.assignedRiderId)
-    : riders[0];
+    : null;
 
   return (
     <div>
@@ -536,7 +578,16 @@ function OrdersPanel({ onReorder, onExploreMenu }) {
       </h1>
       <p className="mt-1 text-sm text-[#777]">Track deliveries and reorder your favourites</p>
 
-      {userOrders.length === 0 ? (
+      {loadingList ? (
+        <div className="mt-10 flex items-center justify-center gap-2 text-sm font-semibold text-[#777]">
+          <Loader2 className="h-4 w-4 animate-spin text-[#E51B23]" />
+          Loading orders...
+        </div>
+      ) : listError ? (
+        <div className="mt-10 rounded-2xl border border-red-200 bg-red-50 px-4 py-6 text-center text-sm font-semibold text-red-700">
+          {listError}
+        </div>
+      ) : userOrders.length === 0 ? (
         <div className="mt-10 flex flex-col items-center rounded-2xl border border-dashed border-[#E5E5E5] bg-[#FAFAFA] px-6 py-14 text-center">
           <ShoppingBag className="mb-3 h-10 w-10 text-[#E51B23]" />
           <h3 className="font-['Outfit'] text-lg font-black text-[#191919]">No orders yet</h3>
@@ -560,7 +611,7 @@ function OrdersPanel({ onReorder, onExploreMenu }) {
                 <button
                   key={order.orderId || order.id}
                   type="button"
-                  onClick={() => setSelectedId(order.orderId)}
+                  onClick={() => setSelectedId(order.orderId || order.id)}
                   className={`w-full cursor-pointer rounded-2xl border p-4 text-left transition ${
                     selected
                       ? "border-[#E51B23]/40 bg-[#FFF5F5]"
@@ -573,7 +624,7 @@ function OrdersPanel({ onReorder, onExploreMenu }) {
                         {order.orderNumber || order.orderId}
                       </p>
                       <p className="mt-0.5 text-xs text-[#888]">
-                        {new Date(order.createdAt).toLocaleString()}
+                        {order.createdAt ? new Date(order.createdAt).toLocaleString() : "—"}
                       </p>
                     </div>
                     <span className="rounded-full bg-[#E51B23]/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-[#E51B23]">
@@ -593,11 +644,17 @@ function OrdersPanel({ onReorder, onExploreMenu }) {
               <div className="flex items-center gap-2 text-sm font-bold text-[#191919]">
                 <Bike className="h-4 w-4 text-[#E51B23]" />
                 Live status: <span className="capitalize text-[#E51B23]">{active.status}</span>
+                {loadingDetail ? (
+                  <Loader2 className="ml-1 h-3.5 w-3.5 animate-spin text-[#E51B23]" />
+                ) : null}
               </div>
               {rider ? (
                 <p className="mt-2 text-xs text-[#777]">
                   Rider: {rider.name} {rider.phone ? `· ${rider.phone}` : ""}
                 </p>
+              ) : null}
+              {active.deliveryAddress ? (
+                <p className="mt-2 text-xs text-[#777]">Deliver to: {active.deliveryAddress}</p>
               ) : null}
               <div className="mt-4 space-y-2 border-t border-[#F0F0F0] pt-4">
                 {(active.items || []).map((item, idx) => (
@@ -606,7 +663,9 @@ function OrdersPanel({ onReorder, onExploreMenu }) {
                       {item.quantity || 1}× {item.name}
                     </span>
                     <span className="font-bold text-[#191919]">
-                      {formatPrice?.(item.price * (item.quantity || 1) || 0)}
+                      {formatPrice?.(
+                        item.lineTotal || item.price * (item.quantity || 1) || 0
+                      )}
                     </span>
                   </div>
                 ))}

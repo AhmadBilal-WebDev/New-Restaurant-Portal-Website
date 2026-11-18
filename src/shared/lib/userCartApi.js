@@ -428,20 +428,24 @@ function buildCheckoutPayload({
   deliveryAddress = "",
   paymentMethod = "cod",
   deliveryFee = 0,
-  notes = ""
+  notes = "",
+  customerName = "",
+  customerContact = ""
 } = {}) {
   return {
-    frontendDomainUrl: String(frontendDomainUrl || "").trim(),
     branchId: String(branchId || "").trim(),
     branchName: String(branchName || "").trim(),
+    orderMode: String(orderMode || "delivery").trim() || "delivery",
+    paymentMethod: mapPaymentMethod(paymentMethod),
+    selectedArea: String(selectedArea || "").trim(),
     latitude: String(latitude ?? "").trim(),
     longitude: String(longitude ?? "").trim(),
-    orderMode: String(orderMode || "delivery").trim() || "delivery",
-    selectedArea: String(selectedArea || "").trim(),
     deliveryAddress: String(deliveryAddress || "").trim(),
-    paymentMethod: mapPaymentMethod(paymentMethod),
     deliveryFee: Number(deliveryFee) || 0,
-    notes: String(notes || "").trim()
+    notes: String(notes || "").trim(),
+    customerName: String(customerName || "").trim(),
+    customerContact: String(customerContact || "").trim(),
+    frontendDomainUrl: String(frontendDomainUrl || "").trim()
   };
 }
 
@@ -608,13 +612,36 @@ async function clearUserCart(frontendDomainUrl = getPublicFrontendDomainUrl()) {
 
 async function checkoutUserCart(payload) {
   const body = buildCheckoutPayload(payload || {});
-  return cartFetch({
+  // Auth optional: guest checkout returns empty customer; login fills details.
+  const result = await cartFetch({
     path: "/api/restaurant/user/checkout",
     method: "POST",
     body,
     frontendDomainUrl: body.frontendDomainUrl,
-    includeDomainInQuery: true
+    includeDomainInQuery: true,
+    requireAuth: false
   });
+
+  const record = asRecord(result.data) || {};
+  return {
+    ...result,
+    success: record.success === true || result.ok,
+    checkoutAllowed: record.checkoutAllowed === true,
+    nextStep: textValue(record, ["nextStep"]) || "",
+    nextApi: textValue(record, ["nextApi"]) || "",
+    merchant: asRecord(record.merchant),
+    customer: asRecord(record.customer),
+    branch: asRecord(record.branch),
+    fulfillment: asRecord(record.fulfillment),
+    priceSummary: asRecord(record.priceSummary),
+    checkout: asRecord(record.checkout),
+    placeOrderPayload: asRecord(record.placeOrderPayload),
+    checkoutItems: Array.isArray(record.items)
+      ? record.items
+      : Array.isArray(record.checkout?.items)
+        ? record.checkout.items
+        : []
+  };
 }
 
 export {
