@@ -1,5 +1,6 @@
+"use client";
+
 import { useEffect, useMemo, useState } from "react";
-import { City, Country, State } from "country-state-city";
 import { useRestaurant } from '@/contexts/RestaurantContext';
 import { useBranchScope } from '@/shared/lib/useBranchScope';
 import { getSidebarButtons } from '@/shared/lib/ownerApi';
@@ -227,20 +228,64 @@ const StaffPage = ({ mode = "all" }) => {
   const [permissionsLoading, setPermissionsLoading] = useState(false);
   const [ownerBranches, setOwnerBranches] = useState([]);
   const [branchesLoading, setBranchesLoading] = useState(false);
-  const countries = useMemo(
-    () => [...Country.getAllCountries()].sort((a, b) => a.name.localeCompare(b.name)),
-    []
-  );
-  const provinces = useMemo(
-    () => roleForm.countryIso ? [...State.getStatesOfCountry(roleForm.countryIso)].sort((a, b) => a.name.localeCompare(b.name)) : [],
-    [roleForm.countryIso]
-  );
-  const provinceCities = useMemo(
-    () => roleForm.countryIso && roleForm.provinceIso ? [...City.getCitiesOfState(roleForm.countryIso, roleForm.provinceIso)].sort(
-      (a, b) => a.name.localeCompare(b.name)
-    ) : [],
-    [roleForm.countryIso, roleForm.provinceIso]
-  );
+  // Lazy-load heavy geo package so /admin/staff/add does not crash on Vercel chunk load.
+  const [geoLib, setGeoLib] = useState(null);
+  const [geoReady, setGeoReady] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    import("country-state-city")
+      .then((mod) => {
+        if (cancelled) return;
+        setGeoLib({
+          Country: mod.Country,
+          State: mod.State,
+          City: mod.City
+        });
+        setGeoReady(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setGeoLib(null);
+        setGeoReady(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const countries = useMemo(() => {
+    if (!geoLib?.Country) return [];
+    try {
+      return [...geoLib.Country.getAllCountries()].sort((a, b) =>
+        a.name.localeCompare(b.name)
+      );
+    } catch {
+      return [];
+    }
+  }, [geoLib]);
+
+  const provinces = useMemo(() => {
+    if (!geoLib?.State || !roleForm.countryIso) return [];
+    try {
+      return [...geoLib.State.getStatesOfCountry(roleForm.countryIso)].sort((a, b) =>
+        a.name.localeCompare(b.name)
+      );
+    } catch {
+      return [];
+    }
+  }, [geoLib, roleForm.countryIso]);
+
+  const provinceCities = useMemo(() => {
+    if (!geoLib?.City || !roleForm.countryIso || !roleForm.provinceIso) return [];
+    try {
+      return [...geoLib.City.getCitiesOfState(roleForm.countryIso, roleForm.provinceIso)].sort(
+        (a, b) => a.name.localeCompare(b.name)
+      );
+    } catch {
+      return [];
+    }
+  }, [geoLib, roleForm.countryIso, roleForm.provinceIso]);
   const isPkLocation = isPakistanCountry(roleForm.countryIso);
   const districtOptions = useMemo(() => {
     if (!roleForm.provinceIso) return [];
@@ -377,7 +422,7 @@ const StaffPage = ({ mode = "all" }) => {
   const donutStyle = {
     background: `conic-gradient(#00D084 0% ${roleStats.activePct}%, #EF4444 ${roleStats.activePct}% ${roleStats.activePct + roleStats.blockedPct}%, #F59E0B ${roleStats.activePct + roleStats.blockedPct}% 100%)`
   };
-  const addPageBusy = rolesLoading || permissionsLoading || branchesLoading;
+  const addPageBusy = rolesLoading || permissionsLoading || branchesLoading || !geoReady;
   useEffect(() => {
     const shouldLoad = isAddPage || isModalOpen && !editingStaff;
     if (!shouldLoad) return;
@@ -535,7 +580,12 @@ const StaffPage = ({ mode = "all" }) => {
   };
   const openApiRole = (role) => {
     const country = countries.find((item) => item.name === role.country);
-    const province = country ? State.getStatesOfCountry(country.isoCode).find((item) => item.name === role.province) : void 0;
+    const province = country && geoLib?.State
+      ? geoLib.State.getStatesOfCountry(country.isoCode).find((item) => item.name === role.province)
+      : void 0;
+    const branchNameRaw = Array.isArray(role.branchNames) && role.branchNames[0]
+      ? role.branchNames[0]
+      : String(role.branchName || "").split(",")[0]?.trim() || "";
     setRoleForm({
       ...emptyRoleForm,
       roleName: role.roleName,
@@ -544,9 +594,9 @@ const StaffPage = ({ mode = "all" }) => {
       fatherName: role.fatherName,
       email: role.email,
       showAllBranches: role.showAllBranches,
-      branchName: role.showAllBranches ? "" : role.branchNames?.[0] || role.branchName.split(",")[0]?.trim() || "",
+      branchName: role.showAllBranches ? "" : branchNameRaw,
       reason: role.createdReason || role.reason || "",
-      cnic: role.cnic.replace(/\D/g, "").slice(0, 13),
+      cnic: String(role.cnic || "").replace(/\D/g, "").slice(0, 13),
       address: role.address,
       country: role.country,
       countryIso: country?.isoCode || "",

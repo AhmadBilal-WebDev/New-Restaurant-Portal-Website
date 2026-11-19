@@ -54,8 +54,18 @@ export function AdminShell({ children }) {
   useEffect(() => {
     if (!isAdminLoggedIn || allowedTabs === null) return;
     const atAdminRoot = pathname === '/admin' || pathname === '/admin/';
+    const staffFamily = new Set([
+      'staff',
+      'all_staff',
+      'add_staff',
+      'create-staff',
+      'add-staff',
+    ]);
     const tabAllowed =
-      allowedTabs.length === 0 || allowedTabs.includes(tabFromUrl);
+      allowedTabs.length === 0 ||
+      allowedTabs.includes(tabFromUrl) ||
+      (staffFamily.has(tabFromUrl) &&
+        allowedTabs.some((tabId) => staffFamily.has(tabId)));
     if (atAdminRoot) {
       const fallback = allowedTabs[0] || 'dashboard';
       router.replace(tabIdToHref(fallback));
