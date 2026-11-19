@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRestaurant } from '@/contexts/RestaurantContext';
+import { useOwnerNotifications } from '@/contexts/OwnerNotificationsContext';
 import { getSidebarButtons } from '@/shared/lib/ownerApi';
 import { getOwnerIdentity, subscribeOwnerIdentity } from '@/shared/lib/ownerProfile';
 import { tabIdToHref } from "../adminRoutes";
@@ -252,10 +253,10 @@ const AdminSidebar = ({
   const {
     config,
     activeAdminTab,
-    orders,
     customerReviews,
     subscribers
   } = useRestaurant();
+  const { pendingOrderCount } = useOwnerNotifications();
   const [apiSidebarTree, setApiSidebarTree] = useState([]);
   const [isApiLoading, setIsApiLoading] = useState(true);
   const [identity, setIdentity] = useState(getOwnerIdentity);
@@ -291,9 +292,7 @@ const AdminSidebar = ({
     }
     loadApiButtons();
   }, []);
-  const activeOrdersCount = orders.filter(
-    (o) => o.status === "received" || o.status === "preparing" || o.status === "ready"
-  ).length;
+  const activeOrdersCount = Number(pendingOrderCount) || 0;
   const pendingReviewsCount = customerReviews.filter((r) => r.status === "pending").length;
   const navTree = useMemo(
     () => applyBadges(apiSidebarTree, {

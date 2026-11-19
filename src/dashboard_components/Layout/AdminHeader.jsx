@@ -11,32 +11,46 @@ import {
   isStaffSession,
   staffLiveBranches
 } from '@/shared/lib/staffAccess';
+import { NotificationBell } from "@/dashboard_components/Layout/NotificationBell";
 import {
   Menu,
   ChevronDown,
   Moon,
   Sun,
-  Bell,
   ShieldCheck,
   LogOut
 } from "lucide-react";
+
+function LiveClock() {
+  const [timeString, setTimeString] = useState(() =>
+    new Date().toTimeString().split(" ")[0]
+  );
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setTimeString(new Date().toTimeString().split(" ")[0]);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+  return (
+    <div className="hidden lg:flex items-center px-3 py-1.5 bg-[#191B20] border border-[#292D35] rounded-xl text-neutral-300 font-mono text-xs tracking-wider shadow-inner">
+      <span className="text-[#00D084] mr-1.5">●</span>
+      {timeString}
+    </div>
+  );
+}
+
 const AdminHeader = ({ onToggleSidebar, onLogout }) => {
   const {
     activeAdminTab,
     branches,
     activeBranchFilter,
     setActiveBranchFilter,
-    orders,
     adminTheme,
     toggleAdminTheme,
     isThemeSaving,
     addToast,
   } = useRestaurant();
   const navigateAdmin = useAdminNavigate();
-  const [timeString, setTimeString] = useState(() => {
-    const now = /* @__PURE__ */ new Date();
-    return now.toTimeString().split(" ")[0];
-  });
   const isDarkMode = adminTheme === "dark";
 
   const handleThemeToggle = async () => {
@@ -123,13 +137,6 @@ const AdminHeader = ({ onToggleSidebar, onLogout }) => {
     }
     return unsubscribe;
   }, []);
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const now = /* @__PURE__ */ new Date();
-      setTimeString(now.toTimeString().split(" ")[0]);
-    }, 1e3);
-    return () => clearInterval(timer);
-  }, []);
   const getTabTitle = (tab) => {
     switch (tab) {
       case "dashboard":
@@ -209,13 +216,6 @@ const AdminHeader = ({ onToggleSidebar, onLogout }) => {
     if (!selected) return `All Branches (${liveBranchCount})`;
     return selected.shortName || selected.name;
   })();
-  const pendingOrdersCount = orders.filter((o) => {
-    if (o.status !== "received" && o.status !== "preparing") return false;
-    if (activeBranchFilter === "all") {
-      return liveVisibleBranches.some((b) => b.id === o.branchId);
-    }
-    return o.branchId === activeBranchFilter;
-  }).length;
   const renderBranchRows = (compact) => visibleBranches.map((b) => {
     const deactive = b.isActive === false;
     const selected = activeBranchFilter === b.id;
@@ -378,13 +378,7 @@ const AdminHeader = ({ onToggleSidebar, onLogout }) => {
 
       {renderBranchControl({ compact: false, className: "hidden md:block" })}
 
-      {
-        /* Live Monospace Digital Clock */
-      }
-      <div className="hidden lg:flex items-center px-3 py-1.5 bg-[#191B20] border border-[#292D35] rounded-xl text-neutral-300 font-mono text-xs tracking-wider shadow-inner">
-        <span className="text-[#00D084] mr-1.5">●</span>
-        {timeString}
-      </div>
+      <LiveClock />
 
       {
         /* Theme Toggle Button */
@@ -405,50 +399,16 @@ const AdminHeader = ({ onToggleSidebar, onLogout }) => {
         )}
       </button>
 
-      {
-        /* Notifications Bell */
-      }
-      <div
-        className="relative"
-        onMouseEnter={() => {
-          setShowNotifications(true);
-          setShowRoleDropdown(false);
-          setShowBranchDropdown(false);
-          setShowProfileMenu(false);
+      <NotificationBell
+        onOpenChange={(isOpen) => {
+          setShowNotifications(isOpen);
+          if (isOpen) {
+            setShowRoleDropdown(false);
+            setShowBranchDropdown(false);
+            setShowProfileMenu(false);
+          }
         }}
-        onMouseLeave={() => setShowNotifications(false)}
-      >
-        <button
-          onClick={() => setShowNotifications((open) => !open)}
-          className="w-10 h-10 rounded-xl bg-[#191B20] hover:bg-[#252830] border border-[#292D35] text-neutral-400 hover:text-white flex items-center justify-center relative transition-colors cursor-pointer"
-          title="Notifications"
-          aria-label="Notifications"
-        >
-          <Bell className="w-4 h-4" />
-          {pendingOrdersCount > 0 && <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-[#FF5A1F] ring-2 ring-[#191B20] animate-pulse" />}
-        </button>
-
-        {showNotifications && <div className="absolute right-0 top-full mt-2 before:absolute before:-top-2 before:left-0 before:h-2 before:w-full before:content-[''] w-80 bg-[#191B20] border border-[#292D35] rounded-xl shadow-2xl p-3 z-50 text-xs animate-in fade-in zoom-in-95">
-          <div className="flex items-center justify-between pb-2 border-b border-[#292D35] mb-2">
-            <span className="font-bold text-white">Notifications</span>
-            <span className="text-[10px] bg-[#FF5A1F]/20 text-[#FF5A1F] px-1.5 py-0.5 rounded-full font-semibold">
-              {pendingOrdersCount} Active
-            </span>
-          </div>
-          <div className="space-y-2 max-h-60 overflow-y-auto no-scrollbar">
-            {orders.slice(0, 4).map((ord) => <div key={ord.orderId} className="p-2 rounded-lg bg-[#101216] border border-[#292D35]/60">
-              <div className="flex items-center justify-between font-bold text-neutral-200">
-                <span>Order {ord.orderNumber}</span>
-                <span className="text-[10px] text-emerald-400 uppercase">{ord.status}</span>
-              </div>
-              <div className="text-[11px] text-neutral-400 mt-0.5">
-                {ord.customerName} • {ord.branchName}
-              </div>
-              <div className="text-[10px] text-neutral-500 mt-1">{ord.createdAt}</div>
-            </div>)}
-          </div>
-        </div>}
-      </div>
+      />
 
       <div
         className="relative"

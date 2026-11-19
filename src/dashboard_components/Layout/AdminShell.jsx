@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState, createContext, useContext } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { useRestaurant } from '@/contexts/RestaurantContext';
 import {
@@ -18,15 +18,10 @@ import { AdminFooter } from '@/dashboard_components/Layout/AdminFooter';
 import { AdminBootLoader } from '@/dashboard_components/Layout/AdminBootLoader';
 import { AdminLoginPage } from '@/dashboard_components/Login/AdminLoginPage';
 import { pathnameToTabId, tabIdToHref } from '@/dashboard_components/adminRoutes';
+import { OwnerNotificationsProvider } from '@/contexts/OwnerNotificationsContext';
+import { AdminOrderBridgeContext } from '@/dashboard_components/Layout/adminOrderBridge';
 
-const AdminOrderBridgeContext = createContext({
-  selectedOrder: null,
-  setSelectedOrder: () => {},
-});
-
-export function useAdminOrderBridge() {
-  return useContext(AdminOrderBridgeContext);
-}
+export { useAdminOrderBridge } from '@/dashboard_components/Layout/adminOrderBridge';
 
 export function AdminShell({ children }) {
   const pathname = usePathname();
@@ -141,59 +136,61 @@ export function AdminShell({ children }) {
 
   return (
     <AdminOrderBridgeContext.Provider value={{ selectedOrder, setSelectedOrder }}>
-      <div
-        data-admin-theme={adminTheme}
-        className="h-screen w-full bg-[var(--admin-bg,#000000)] flex text-[var(--admin-text,#ffffff)] font-sans antialiased selection:bg-[#FF5A1F]/30 selection:text-white overflow-hidden"
-      >
-        <AdminSidebar
-          isOpenMobile={isSidebarMobileOpen}
-          onCloseMobile={() => setIsSidebarMobileOpen(false)}
-          onTabsLoaded={handleTabsLoaded}
-          onLogout={handleLogout}
-        />
+      <OwnerNotificationsProvider>
+        <div
+          data-admin-theme={adminTheme}
+          className="h-screen w-full bg-[var(--admin-bg,#000000)] flex text-[var(--admin-text,#ffffff)] font-sans antialiased selection:bg-[#FF5A1F]/30 selection:text-white overflow-hidden"
+        >
+          <AdminSidebar
+            isOpenMobile={isSidebarMobileOpen}
+            onCloseMobile={() => setIsSidebarMobileOpen(false)}
+            onTabsLoaded={handleTabsLoaded}
+            onLogout={handleLogout}
+          />
 
-        <div className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden bg-[var(--admin-bg,#0D0F12)]">
-          <div className="shrink-0 z-30">
-            <AdminHeader
-              onToggleSidebar={() => setIsSidebarMobileOpen(true)}
-              onOpenStore={() => router.push('/')}
-              onLogout={handleLogout}
-            />
-          </div>
+          <div className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden bg-[var(--admin-bg,#0D0F12)]">
+            <div className="shrink-0 z-30">
+              <AdminHeader
+                onToggleSidebar={() => setIsSidebarMobileOpen(true)}
+                onOpenStore={() => router.push('/')}
+                onLogout={handleLogout}
+              />
+            </div>
 
-          <main className="flex-1 overflow-y-auto overflow-x-hidden no-scrollbar bg-[var(--admin-bg,#0D0F12)]">
-            {allowedTabs === null ? (
-              <div
-                role="status"
-                aria-label="Loading workspace"
-                className="p-4 sm:p-6 lg:p-8 space-y-6 animate-pulse"
-              >
-                <div className="flex items-center justify-between gap-4">
-                  <div className="space-y-2">
-                    <div className="h-7 w-56 rounded-lg bg-[#191B20]" />
-                    <div className="h-3 w-72 max-w-full rounded bg-[#191B20]" />
+            <main className="flex-1 overflow-y-auto overflow-x-hidden no-scrollbar bg-[var(--admin-bg,#0D0F12)]">
+              {allowedTabs === null ? (
+                <div
+                  role="status"
+                  aria-label="Loading workspace"
+                  className="p-4 sm:p-6 lg:p-8 space-y-6 animate-pulse"
+                >
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="space-y-2">
+                      <div className="h-7 w-56 rounded-lg bg-[#191B20]" />
+                      <div className="h-3 w-72 max-w-full rounded bg-[#191B20]" />
+                    </div>
+                    <div className="h-10 w-36 rounded-xl bg-[#191B20]" />
                   </div>
-                  <div className="h-10 w-36 rounded-xl bg-[#191B20]" />
+                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+                    {[1, 2, 3, 4].map((item) => (
+                      <div
+                        key={item}
+                        className="h-28 rounded-2xl border border-[#292D35] bg-[#14171C]"
+                      />
+                    ))}
+                  </div>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-                  {[1, 2, 3, 4].map((item) => (
-                    <div
-                      key={item}
-                      className="h-28 rounded-2xl border border-[#292D35] bg-[#14171C]"
-                    />
-                  ))}
-                </div>
-              </div>
-            ) : (
-              children
-            )}
-          </main>
+              ) : (
+                children
+              )}
+            </main>
 
-          <div className="shrink-0 z-20">
-            <AdminFooter />
+            <div className="shrink-0 z-20">
+              <AdminFooter />
+            </div>
           </div>
         </div>
-      </div>
+      </OwnerNotificationsProvider>
     </AdminOrderBridgeContext.Provider>
   );
 }
